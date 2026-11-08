@@ -35,6 +35,11 @@ button { cursor: pointer; }
 .work-info h1 { margin-top: 0; }
 .work-description { color: #c9bfd8; line-height: 1.6; max-width: 65ch; }
 .chapter-row { display: flex; gap: 8px; }
+.chapter-filters { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.chapter-order { min-width: 40px; font-weight: 700; }
+.resume-reading { margin-inline-start: 8px; }
+.reader .page { scroll-margin-top: 76px; }
+.reader .pending-page { min-height: 65vh; }
 .chapter-open { text-align: left; flex: 1; }
 .chapter-read .chapter-open { color: #a99dbb; background: #191722; }
 .chapter-mark { width: 48px; color: #c4a5ff; }

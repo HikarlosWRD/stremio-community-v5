@@ -22,6 +22,7 @@ function updateWork(item, update) {
     const data = readLibrary();
     const key = workKey(item);
     const existing = data.works[key] || { item, inLibrary: false, read: {} };
+    if (existing.lastChapter) existing.lastReadAt ??= existing.updatedAt;
     existing.item = { id: item.id, title: item.title, source: item.source };
     update(existing);
     data.works[key] = existing;
@@ -38,10 +39,13 @@ function library(home = false) {
     const heading = el('div', '', 'library-heading');
     heading.append(el('small', 'MANGÁS'), el('h1', home ? 'Continue sua leitura' : 'Sua biblioteca'));
     view.append(heading);
-    const works = Object.values(readLibrary().works).filter(work => work.inLibrary);
-    works.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const works = Object.values(readLibrary().works)
+        .filter(work => work.inLibrary && (!home || work.lastChapter?.id != null));
+    const activity = work => (home ? work.lastReadAt ?? work.updatedAt : work.updatedAt) || 0;
+    works.sort((a, b) => activity(b) - activity(a));
     if (!works.length) {
-        view.append(el('p', 'Adicione uma obra à biblioteca para encontrá-la aqui.', 'muted'));
+        view.append(el('p', home ? 'Comece a ler uma obra da biblioteca para vê-la aqui.' :
+            'Adicione uma obra à biblioteca para encontrá-la aqui.', 'muted'));
         view.append(button('Explorar obras', catalog, 'primary'));
         return;
     }
@@ -53,13 +57,15 @@ function library(home = false) {
         const card = workCard(item, back);
         tile.append(card);
         if (home) {
+            const progress = work.lastChapter;
+            tile.append(button('▶ Continuar', () => chapters(item, back, undefined, '', progress.id, progress.page), 'primary'));
             const entries = work.chapters || [];
-            const index = entries.findIndex(chapter => String(chapter.id) === work.lastChapter?.id);
-            const start = index < 0 ? entries.length - 1 : index;
-            const nearby = entries.slice(Math.max(0, start - 2), start + 1).reverse();
+            const index = entries.findIndex(chapter => String(chapter.id) === String(progress.id));
+            const nearby = index < 0 ? [] : entries.slice(Math.max(0, index - 2), index + 1).reverse();
             for (const chapter of nearby) {
                 const read = work.read?.[String(chapter.id)];
-                const shortcut = button(chapter.name, () => chapters(item, back, undefined, '', chapter.id), 'home-chapter');
+                const shortcut = button(chapter.name || 'Capítulo ' + (chapter.number ?? 'sem número'),
+                    () => chapters(item, back, undefined, '', chapter.id), 'home-chapter');
                 if (read) shortcut.classList.add('home-chapter-read');
                 tile.append(shortcut);
             }
@@ -711,12 +717,28 @@ async function settings() {
     await load();
 }
 
-async function chapters(item, back = catalog, loaded, previousQuery = '', openId) {
+async function chapters(item, back = catalog, loaded, previousQuery = '', openId, openPage) {
     const page = begin();
     const status = el('p', 'Carregando capítulos…', 'muted');
     const filter = field('search', 'Filtrar capítulos por número ou título');
-    filter.hidden = true;
     filter.value = previousQuery;
+    let ascending = localStorage.getItem('manga-chapter-order') === 'ascending';
+    const order = button('', () => {
+        ascending = !ascending;
+        localStorage.setItem('manga-chapter-order', ascending ? 'ascending' : 'descending');
+        refreshOrder();
+        filter.dispatchEvent(new Event('input'));
+    }, 'chapter-order');
+    function refreshOrder() {
+        order.textContent = ascending ? '↑' : '↓';
+        const label = ascending ? 'Ordem crescente. Mudar para decrescente' : 'Ordem decrescente. Mudar para crescente';
+        order.title = label;
+        order.setAttribute('aria-label', label);
+    }
+    refreshOrder();
+    const filters = el('div', '', 'chapter-filters');
+    filters.hidden = true;
+    filters.append(filter, order);
     const list = el('div', '', 'list');
     const hero = el('section', '', 'work-hero');
     const cover = el('img', '', 'work-cover');
@@ -741,7 +763,7 @@ async function chapters(item, back = catalog, loaded, previousQuery = '', openId
     refreshFavorite();
     info.append(el('h1', item.title), el('p', sourceLabel(item.source), 'muted'), favorite);
     hero.append(cover, info);
-    view.append(button('← Voltar aos títulos', back), hero, el('h2', 'Capítulos'), status, filter, list);
+    view.append(button('← Voltar aos títulos', back), hero, el('h2', 'Capítulos'), status, filters, list);
     window.scrollTo(0, 0);
     try {
         details ??= await api('work', { engine: item.source.engine, id: item.id, title: item.title });
@@ -760,12 +782,19 @@ async function chapters(item, back = catalog, loaded, previousQuery = '', openId
             for (const genre of details.genres) tags.append(el('span', genre));
             info.append(tags);
         }
-        filter.hidden = !entries.length;
+        filters.hidden = !entries.length;
         const returnToList = () => chapters(item, back, details, filter.value);
         const openIndex = openId == null ? -1 : entries.findIndex(entry => String(entry.id) === String(openId));
-        if (openIndex >= 0) { reader(item, entries, openIndex, returnToList); return; }
+        if (openIndex >= 0) { reader(item, entries, openIndex, returnToList, openPage); return; }
+        const progress = savedWork(item)?.lastChapter;
+        const resumeIndex = progress ? entries.findIndex(entry => String(entry.id) === String(progress.id)) : -1;
+        if (resumeIndex >= 0) {
+            const label = '▶ Continuar · ' + (progress.name || 'Capítulo') + ' · Página ' + ((progress.page ?? 0) + 1);
+            favorite.after(button(label, () => reader(item, entries, resumeIndex, returnToList, progress.page), 'resume-reading'));
+        }
         function showChapters() {
             const matched = findChapters(entries, filter.value);
+            if (ascending) matched.reverse();
             const marks = savedWork(item)?.read || {};
             status.textContent = !entries.length ? 'Nenhum capítulo disponível.' :
                 matched.length + ' de ' + entries.length + ' capítulo(s).';
@@ -777,7 +806,11 @@ async function chapters(item, back = catalog, loaded, previousQuery = '', openId
                 if (isRead) row.classList.add('chapter-read');
                 const open = button(entry.name, () => reader(item, entries, index, returnToList), 'chapter-open');
                 const mark = button('', () => {
-                    updateWork(item, work => { work.read ||= {}; work.read[String(entry.id)] = !isRead; work.updatedAt = Date.now(); });
+                    updateWork(item, work => {
+                        work.read ||= {};
+                        work.read[String(entry.id)] = !isRead;
+                        work.updatedAt = Date.now();
+                    });
                     showChapters();
                 }, 'chapter-mark');
                 mark.append(el('span', '', 'bookmark-icon'));
@@ -824,7 +857,7 @@ function readerSelect(label, choices, selected, onChange) {
     return field;
 }
 
-async function reader(item, entries, index, returnToList) {
+async function reader(item, entries, index, returnToList, resumePage = 0) {
     const page = begin();
     const chapter = entries[index];
     const layout = el('section', '', 'reader');
@@ -868,6 +901,11 @@ async function reader(item, entries, index, returnToList) {
     window.scrollTo(0, 0);
 
     const near = new Set();
+    const figures = [];
+    let upcoming = [];
+    let lastPage;
+    let restoring = false;
+    let trackingFrame = 0;
     const cache = new Map();
     let cacheBytes = 0;
     let generation = 0;
@@ -900,10 +938,9 @@ async function reader(item, entries, index, returnToList) {
         for (const change of changes) {
             if (change.isIntersecting) {
                 near.add(change.target);
-                change.target.loadPage();
             } else near.delete(change.target);
         }
-        scheduleUpscale();
+        scheduleTracking();
     }, { rootMargin: '500px 0px' });
     const resize = new ResizeObserver(entries => {
         if (entries[0].contentRect.width !== lastContentWidth) {
@@ -916,9 +953,57 @@ async function reader(item, entries, index, returnToList) {
     dispose = () => {
         observer.disconnect();
         resize.disconnect();
+        window.removeEventListener('scroll', scheduleTracking);
+        window.removeEventListener('resize', scheduleTracking);
+        cancelAnimationFrame(trackingFrame);
         activeJob?.abort();
         for (const { url } of cache.values()) URL.revokeObjectURL(url);
     };
+    window.addEventListener('scroll', scheduleTracking, { passive: true });
+    window.addEventListener('resize', scheduleTracking);
+
+    function scheduleTracking() {
+        if (trackingFrame || page !== screen) return;
+        trackingFrame = requestAnimationFrame(() => {
+            trackingFrame = 0;
+            trackPage();
+        });
+    }
+    function trackPage() {
+        if (restoring || page !== screen) return;
+        const top = document.querySelector('header').getBoundingClientRect().bottom;
+        const bottom = window.innerHeight;
+        const center = (top + bottom) / 2;
+        let visible;
+        let best = Infinity;
+        for (const figure of near) {
+            const rect = figure.getBoundingClientRect();
+            if (rect.bottom <= top || rect.top >= bottom) continue;
+            if (Math.min(rect.bottom, bottom) - Math.max(rect.top, top) >= 32) figure.loadPage();
+            const distance = Math.max(rect.top - center, center - rect.bottom, 0);
+            if (distance < best) {
+                best = distance;
+                visible = figure;
+            }
+        }
+        if (!visible) return;
+        visible.loadPage();
+        const number = visible.pageNumber;
+        if (visible.ready && number !== lastPage) {
+            lastPage = number;
+            status.textContent = 'Página ' + (number + 1) + ' de ' + figures.length;
+            updateWork(item, work => {
+                work.lastChapter = { id: String(chapter.id), name: chapter.name, page: number };
+                work.chapters = entries;
+                work.lastReadAt = work.updatedAt = Date.now();
+            });
+        }
+        upcoming = figures.slice(number, number + 4);
+        if (upscaleModel !== 'off') {
+            for (const figure of upcoming) figure.loadPage();
+            scheduleUpscale();
+        }
+    }
 
     function updateControls() {
         const anime4k = upscaleModel !== 'off' && !nativeScales[upscaleModel];
@@ -933,9 +1018,9 @@ async function reader(item, entries, index, returnToList) {
         activeJob?.abort();
         upscaleStatus.textContent = '';
         if (upscaleModel === 'off') {
-            for (const figure of pages.children) showOriginal(figure);
+            for (const figure of figures) showOriginal(figure);
         } else {
-            scheduleUpscale();
+            scheduleTracking();
         }
     }
     function showOriginal(figure) {
@@ -956,7 +1041,7 @@ async function reader(item, entries, index, returnToList) {
         for (const [key, value] of cache) {
             if (cacheBytes <= 96 * 1024 * 1024 && cache.size <= 24) break;
             if (value.figure.displayed === key) {
-                if (near.has(value.figure)) continue;
+                if (near.has(value.figure) || upcoming.includes(value.figure)) continue;
                 showOriginal(value.figure);
             }
             cache.delete(key);
@@ -970,16 +1055,9 @@ async function reader(item, entries, index, returnToList) {
         const scale = nativeScales[modelName];
         const variant = scale ? modelName : [modelName, repetitions, refineColor].join(':');
         const keyFor = figure => figure.original + ':' + variant;
-        const candidates = [...near].filter(figure => figure.ready &&
+        const figure = upcoming.find(figure => !figure.loadFailed &&
             figure.displayed !== keyFor(figure) && figure.failedGeneration !== generation);
-        const center = window.innerHeight / 2;
-        const distance = figure => {
-            const rect = figure.getBoundingClientRect();
-            return Math.max(rect.top - center, center - rect.bottom, 0);
-        };
-        candidates.sort((a, b) => distance(a) - distance(b));
-        const figure = candidates[0];
-        if (!figure) return;
+        if (!figure?.ready) return;
         const key = keyFor(figure);
         const current = generation;
         const job = new AbortController();
@@ -989,7 +1067,7 @@ async function reader(item, entries, index, returnToList) {
             let output = cache.get(key);
             if (output) cache.delete(key);
             else {
-                upscaleStatus.textContent = 'Processando ' + models[modelName] + '…';
+                upscaleStatus.textContent = 'Processando página ' + (figure.pageNumber + 1) + ' · ' + models[modelName] + '…';
                 const result = scale ? await upscaleNative(figure.image, modelName, scale, job.signal) :
                     await upscaleImage(figure.image, modelName, repetitions, refineColor, stillNeeded);
                 if (!result || !stillNeeded()) return;
@@ -1003,13 +1081,13 @@ async function reader(item, entries, index, returnToList) {
             enhanced.alt = figure.image.alt;
             enhanced.src = output.url;
             await enhanced.decode();
-            if (!stillNeeded() || !near.has(figure)) return;
+            if (!stillNeeded() || !upcoming.includes(figure)) return;
             figure.image.hidden = true;
             figure.enhancedImage?.remove();
             figure.enhancedImage = enhanced;
             figure.displayed = key;
             figure.prepend(enhanced);
-            upscaleStatus.textContent = output.text;
+            upscaleStatus.textContent = 'Página ' + (figure.pageNumber + 1) + ' · ' + output.text;
         } catch (error) {
             if (stillNeeded()) {
                 figure.failedGeneration = current;
@@ -1034,17 +1112,21 @@ async function reader(item, entries, index, returnToList) {
         });
         const release = dispose;
         dispose = () => { completion.disconnect(); release(); };
-        let startedReading = false;
+        const resumeIndex = Math.max(0, Math.min(urls.length - 1, Number.isInteger(resumePage) ? resumePage : 0));
+        restoring = resumeIndex > 0;
         const end = el('div', 'Fim do capítulo', 'chapter-end');
         end.hidden = true;
         status.textContent = urls.length ? urls.length + ' página(s)' : 'Nenhuma página disponível.';
         urls.forEach((url, i) => {
-            const figure = el('figure', '', 'page');
+            const figure = el('figure', '', 'page pending-page');
+            figure.pageNumber = i;
+            figures.push(figure);
             const image = el('img');
             image.alt = 'Página ' + (i + 1);
             image.hidden = true;
             const retry = button('Tentar carregar a página ' + (i + 1), () => {
                 figure.started = false;
+                figure.loadFailed = false;
                 figure.loadPage();
             });
             retry.hidden = true;
@@ -1059,30 +1141,37 @@ async function reader(item, entries, index, returnToList) {
             image.onload = () => {
                 image.hidden = false;
                 figure.ready = true;
-                if (page === screen && !startedReading) {
-                    startedReading = true;
-                    updateWork(item, work => {
-                        work.lastChapter = { id: String(chapter.id), name: chapter.name };
-                        work.chapters = entries;
-                        work.updatedAt = Date.now();
-                    });
+                figure.classList.remove('pending-page');
+                if (restoring && i === resumeIndex && page === screen) {
+                    figure.scrollIntoView({ block: 'start' });
+                    restoring = false;
                 }
                 if (page === screen && i === urls.length - 1) {
                     end.hidden = false;
                     completion.observe(end);
                 }
-                if (near.has(figure)) scheduleUpscale();
+                scheduleTracking();
             };
             image.onerror = () => {
                 figure.ready = false;
+                figure.loadFailed = true;
+                figure.classList.remove('pending-page');
                 image.hidden = true;
                 retry.hidden = false;
+                if (i === resumeIndex) restoring = false;
+                scheduleTracking();
             };
             figure.append(image, retry);
             pages.append(figure);
             observer.observe(figure);
         });
         if (urls.length) pages.append(end);
+        if (restoring) {
+            const target = figures[resumeIndex];
+            target.scrollIntoView({ block: 'start' });
+            target.loadPage();
+        }
+        scheduleTracking();
     } catch { if (page === screen) errorText(status, 'Não foi possível carregar as páginas. Tente novamente.'); }
 }
 
