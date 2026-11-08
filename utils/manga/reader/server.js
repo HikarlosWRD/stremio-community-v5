@@ -4,7 +4,7 @@ const net = require('node:net');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, randomInt } = require('node:crypto');
 const { createInterface } = require('node:readline');
 const { setMaxListeners } = require('node:events');
 const { normalize, rankResults, searchableSources } = require('./search-rules');
@@ -26,7 +26,7 @@ async function trendingManga(page) {
             body: JSON.stringify({ variables: { page }, query: `
                 query TrendingManga($page: Int!) {
                     Page(page: $page, perPage: 30) {
-                        pageInfo { hasNextPage }
+                        pageInfo { hasNextPage lastPage }
                         media(type: MANGA, sort: TRENDING_DESC, isAdult: false) {
                             id title { romaji english } description(asHtml: false)
                             bannerImage coverImage { large } genres startDate { year }
@@ -37,7 +37,8 @@ async function trendingManga(page) {
         if (!response.ok) throw new Error('AniList indisponível (HTTP ' + response.status + ').');
         const { data } = await response.json();
         if (!Array.isArray(data?.Page?.media)) throw new Error('O AniList não retornou recomendações.');
-        return { rows: data.Page.media, more: page < 500 && data.Page.pageInfo.hasNextPage };
+        return { rows: data.Page.media, more: page < 500 && data.Page.pageInfo.hasNextPage,
+            pageCount: Math.min(500, Math.max(1, Number(data.Page.pageInfo.lastPage) || 1)) };
     })();
     trendingCache.delete(page);
     if (trendingCache.size >= 32) trendingCache.delete(trendingCache.keys().next().value);
@@ -47,6 +48,20 @@ async function trendingManga(page) {
         if (trendingCache.get(page)?.result === result) trendingCache.delete(page);
         throw error;
     }
+}
+
+async function randomTrendingManga(previousId) {
+    const firstPage = await trendingManga(1);
+    const pageCount = firstPage.pageCount;
+    for (let attempt = 0; attempt < 4; attempt++) {
+        const page = randomInt(1, pageCount + 1);
+        const { rows } = page === 1 ? firstPage : await trendingManga(page);
+        const valid = rows.filter(work => work?.id != null && (work.title?.english || work.title?.romaji));
+        const unseen = valid.filter(work => String(work.id) !== String(previousId));
+        const candidates = unseen.length ? unseen : (pageCount === 1 || attempt === 3 ? valid : []);
+        if (candidates.length) return candidates[randomInt(candidates.length)];
+    }
+    throw new Error('O AniList não retornou mangás para o sorteio.');
 }
 
 const [token] = process.argv.slice(2);
@@ -439,6 +454,7 @@ async function command(body) {
         case 'pages': return (await chapterImages(body.engine, body.id)).map(p => media(body.engine, p));
         case 'coverage': return coverage(body.engine, body.id);
         case 'trending': return trendingManga(body.page);
+        case 'randomTrending': return randomTrendingManga(body.previousId);
         default: throw new Error('Operação inválida.');
     }
 }

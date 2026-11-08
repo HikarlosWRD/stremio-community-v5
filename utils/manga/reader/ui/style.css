@@ -133,6 +133,8 @@ p { line-height: 1.45; }
 .recommendation-preview .recommendation-banner { filter: blur(13px) brightness(.56) saturate(.88); transform: scale(1.08); }
 .recommendation-preview .recommendation-hero::before { background: linear-gradient(0deg, #101010ec 2%, #101010a8 55%, #1010107a), linear-gradient(90deg, #101010df, #10101050 76%); }
 .recommendation-preview .controls { margin-top: 14px; }
+.recommendation-preview .recommendation-loading { min-height: 180px; padding: 24px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: center; text-align: center; }
+.recommendation-preview .recommendation-loading p { flex-basis: 100%; margin: 0; }
 .screen-hero { min-height: clamp(230px, 27vw, 340px); }
 .screen-hero .recommendation-info { align-items: center; }
 .screen-hero .recommendation-info form { margin-top: 18px; }

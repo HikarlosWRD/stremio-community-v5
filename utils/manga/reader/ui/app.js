@@ -682,7 +682,6 @@ function recommendations(state = { rows: [], next: 1, scroll: 0 }) {
     const dice = button('⚄', surprise, 'recommendation-dice');
     dice.setAttribute('aria-label', 'Sortear uma obra');
     dice.title = 'Sortear uma obra';
-    dice.disabled = !state.rows.length;
     heading.panel.append(dice);
     const cards = el('div', '', 'grid recommendations-grid');
     const status = el('p', '', 'muted');
@@ -709,26 +708,56 @@ function recommendations(state = { rows: [], next: 1, scroll: 0 }) {
         const close = () => dialog.close();
         dialog.addEventListener('close', () => dialog.remove(), { once: true });
         let previous;
-        function roll() {
-            const candidates = state.rows.filter(work =>
-                (work.title.english || work.title.romaji) && work.id !== previous);
-            if (!candidates.length) return;
-            const work = candidates[Math.floor(Math.random() * candidates.length)];
-            previous = work.id;
-            const hero = recommendationHero({ work, back: close });
-            if (dialog.open) hero.classList.add('preview-swap');
-            hero.querySelector('.recommendation-close').setAttribute('aria-label', 'Fechar prévia');
-            const controls = el('div', '', 'controls');
-            const reroll = button('⚄ Sortear outra', roll);
-            reroll.disabled = state.rows.length < 2;
-            controls.append(button('Começar leitura', () => { close(); read(work); }, 'primary'), reroll);
-            hero.querySelector('.recommendation-info > div').append(controls);
-            dialog.replaceChildren(hero);
-            if (dialog.open) reroll.focus();
+        let rolling = false;
+        async function roll() {
+            if (rolling || !dialog.open) return;
+            rolling = true;
+            const oldButton = dialog.querySelector('.recommendation-reroll');
+            if (oldButton) {
+                oldButton.disabled = true;
+                oldButton.textContent = 'Sorteando…';
+            }
+            try {
+                const work = await api('randomTrending', { previousId: previous }, controller.signal);
+                if (!dialog.open || page !== screen) return;
+                const hadPreview = Boolean(dialog.querySelector('.recommendation-hero'));
+                previous = work.id;
+                const hero = recommendationHero({ work, back: close });
+                if (hadPreview) hero.classList.add('preview-swap');
+                hero.querySelector('.recommendation-close').setAttribute('aria-label', 'Fechar prévia');
+                const controls = el('div', '', 'controls');
+                const reroll = button('⚄ Sortear outra', () => { void roll(); }, 'recommendation-reroll');
+                controls.append(button('Começar leitura', () => { close(); read(work); }, 'primary'), reroll);
+                hero.querySelector('.recommendation-info > div').append(controls);
+                dialog.replaceChildren(hero);
+                reroll.focus();
+            } catch (error) {
+                if (!dialog.open || controller.signal.aborted) return;
+                if (oldButton) {
+                    oldButton.title = error.message || 'AniList indisponível';
+                    oldButton.textContent = '⚄ Tentar novamente';
+                } else {
+                    const panel = el('div', '', 'recommendation-loading');
+                    panel.append(el('p', 'Não foi possível sortear no AniList. Tente novamente.', 'muted'),
+                        button('Tentar novamente', () => { void roll(); }, 'primary'),
+                        button('Fechar', close));
+                    dialog.replaceChildren(panel);
+                }
+            } finally {
+                rolling = false;
+                const reroll = dialog.querySelector('.recommendation-reroll');
+                if (dialog.open && reroll) {
+                    reroll.disabled = false;
+                    if (reroll.textContent === 'Sorteando…') reroll.textContent = '⚄ Sortear outra';
+                }
+            }
         }
-        roll();
+        const loading = el('div', '', 'recommendation-loading');
+        loading.append(el('p', 'Sorteando no catálogo de trending do AniList…', 'muted'), button('Fechar', close));
+        dialog.append(loading);
         view.append(dialog);
         dialog.showModal();
+        void roll();
     }
     function add(work) {
         const title = work.title.english || work.title.romaji;
@@ -758,7 +787,6 @@ function recommendations(state = { rows: [], next: 1, scroll: 0 }) {
                 add(work);
             }
             state.next = data.more ? state.next + 1 : null;
-            dice.disabled = !state.rows.length;
             more.hidden = state.next === null;
             status.textContent = state.rows.length ? '' : 'Nenhuma recomendação disponível.';
         } catch {
