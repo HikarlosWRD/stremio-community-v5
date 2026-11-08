@@ -11,7 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 // ---------------------------------------------------------------------
 // Project/Layout Configuration
@@ -32,6 +32,7 @@ const STREAMING_PROFILE_JS = path.join(SOURCE_DIR, 'utils', 'windows', 'streamin
 const STREMIO_RUNTIME_EXE = path.join(SOURCE_DIR, 'utils', 'windows', 'stremio-runtime.exe');
 const FFMPEG_FOLDER = path.join(SOURCE_DIR, 'utils', 'windows', 'ffmpeg');
 const MPV_FOLDER = path.join(SOURCE_DIR, 'utils', 'mpv', 'anime4k');
+const STOCK_MPV_CONFIG = path.join(SOURCE_DIR, 'utils', 'mpv', 'Default Portable Config.7z');
 const DEFAULT_SETTINGS_FOLDER = path.join(SOURCE_DIR, 'utils', 'stremio');
 
 // Default Paths
@@ -91,6 +92,7 @@ const VCPKG_CMAKE = 'G:\\Documents\\Github\\vcpkg\\scripts\\buildsystems\\vcpkg.
         copyFile(STREMIO_RUNTIME_EXE, path.join(DIST_DIR, 'stremio-runtime.exe'));
         copyFolderContents(FFMPEG_FOLDER, DIST_DIR);
         copyFolderContentsPreservingStructure(MPV_FOLDER, DIST_DIR);
+        execFileSync('tar.exe', ['-xf', STOCK_MPV_CONFIG, '-C', DIST_DIR, 'portable_config/shaders'], { stdio: 'inherit' });
         copyFolderContentsPreservingStructure(DEFAULT_SETTINGS_FOLDER, CONFIG_DIR);
 
         console.log('\n=== dist\\win preparation complete. ===');

@@ -12,7 +12,7 @@ Se o título mostrar **servidor compartilhado**, a prévia está usando a instâ
 
 - O serviço próprio tem cache em disco de até 10 GiB, 100 conexões por torrent e parâmetros de descoberta e velocidade de 20 e 64 MiB/s.
 - Para torrents servidos pelo Stremio local, o mpv reserva até 768 MiB para até 50 s de buffer, retém até 96 MiB do trecho anterior e pede 5 s de vídeo pronto ao iniciar ou retomar após falta de dados. O tempo de buffer real depende da taxa do vídeo e do que os peers entregam.
-- Anime4K e os atalhos do Community vêm da configuração original. A qualidade da conexão e os seeds disponíveis ainda determinam a velocidade de torrents públicos.
+- Anime4K, FSR e os atalhos do Community vêm da configuração original. A qualidade da conexão e os seeds disponíveis ainda determinam a velocidade de torrents públicos.
 
 O cache e as configurações próprias do serviço ficam em `portable_config/streaming-server`. O atualizador upstream e Discord RPC ficam desativados nesta build portátil.
 
@@ -23,6 +23,6 @@ Com Visual Studio, Ninja e vcpkg x64, inicialize o submódulo `deps/libmpv` e ex
     cmake -S . -B out -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static
     cmake --build out
 
-Distribua `out/stremio.exe` como `Stremio-Streaming.exe`, junto com `libmpv-2.dll`, o serviço em `utils/windows`, o `server.js` de `version/version-details.json` e as dependências FFmpeg da base. Extraia os shaders de `utils/mpv/anime4k/anime4k-High-end.zip` para `portable_config` e copie a configuração dessa pasta e `utils/stremio/stremio-settings.ini`.
+Distribua `out/stremio.exe` como `Stremio-Streaming.exe`, junto com `libmpv-2.dll`, o serviço em `utils/windows`, o `server.js` de `version/version-details.json` e as dependências FFmpeg da base. Extraia a pasta `portable_config/shaders` de `utils/mpv/Default Portable Config.7z` para a distribuição. Copie a configuração de `utils/mpv/anime4k/portable_config` e adicione `utils/stremio/stremio-settings.ini` à pasta `portable_config`.
 
 [Fork e código da prévia](https://github.com/HikarlosWRD/stremio-community-v5/tree/streaming-preview) · [Stremio Community](https://github.com/Zaarrg/stremio-community-v5/tree/webview-windows) · [libmpv](https://github.com/Zaarrg/libmpv/tree/d57999b78b2d7b22f32f3a827a44903fdaa59e62) · [Anime4K](https://github.com/bloc97/Anime4K)
