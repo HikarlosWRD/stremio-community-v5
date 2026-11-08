@@ -6,6 +6,8 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { createInterface } = require('node:readline');
+const { setMaxListeners } = require('node:events');
+const { normalize, rankResults, isAdultSource } = require('./search-rules');
 
 const [token] = process.argv.slice(2);
 const port = 11680;
@@ -15,10 +17,17 @@ if (!/^[a-f0-9]{32}$/.test(token || '')) throw new Error('Invalid reader session
 const dataDir = path.resolve(__dirname, '../portable_config/manga');
 fs.mkdirSync(dataDir, { recursive: true });
 const selectionFile = path.join(dataDir, 'sources.json');
+const diagnostics = path.join(dataDir, 'reader.log');
 const java = path.join(__dirname, 'runtime', 'bin', 'java.exe');
 const children = new Set();
 const images = new Map();
 const imageTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
+if (fs.existsSync(diagnostics) && fs.statSync(diagnostics).size > 1024 * 1024)
+    fs.renameSync(diagnostics, diagnostics + '.old');
+function reportFailure(operation, error) {
+    const message = String(error.message).replace(/[\r\n]+/g, ' ').slice(0, 500);
+    fs.appendFile(diagnostics, new Date().toISOString() + ' ' + operation + ' ' + message + '\n', () => {});
+}
 
 function launch(args, pipe = false) {
     const log = fs.openSync(path.join(dataDir, 'engines.log'), 'a');
@@ -34,7 +43,7 @@ function launch(args, pipe = false) {
 
 let worker;
 let sequence = 0;
-function kotatsu(op, args = {}) {
+function kotatsu(op, args = {}, signal) {
     if (!worker) {
         const child = launch(['-Xmx384m', '-Dfile.encoding=UTF-8', '-cp',
             path.join(__dirname, 'kotatsu', 'lib', '*'), 'reader.kotatsu.MainKt'], true);
@@ -59,10 +68,14 @@ function kotatsu(op, args = {}) {
         const timer = setTimeout(() => finish({ error: 'A fonte Kotatsu demorou para responder.' }), 29000);
         function finish(reply) {
             clearTimeout(timer);
+            signal?.removeEventListener('abort', abort);
             pending.delete(request);
             if (reply.error) reject(new Error(reply.error));
             else resolve(reply.data);
         }
+        const abort = () => finish({ error: 'Consulta cancelada.' });
+        if (signal?.aborted) { abort(); return; }
+        signal?.addEventListener('abort', abort, { once: true });
         pending.set(request, finish);
         child.stdin.write(JSON.stringify({ request, op, ...args }) + '\n');
     });
@@ -104,25 +117,36 @@ async function startMihon() {
     if (!dead) child.kill();
     throw new Error('Motor Mihon não iniciou. Consulte engines.log.');
 }
-async function graph(connection, query, variables = {}, timeout = 28000) {
+async function graph(connection, query, variables = {}, timeout = 28000, signal) {
     const r = await fetch(connection.origin + '/api/graphql', {
         method: 'POST', headers: { 'content-type': 'application/json', authorization: connection.auth },
-        body: JSON.stringify({ query, variables }), signal: AbortSignal.timeout(timeout)
+        body: JSON.stringify({ query, variables }), signal: signal ?? AbortSignal.timeout(timeout)
     });
     if (!r.ok) throw new Error('Motor Mihon retornou HTTP ' + r.status + '.');
     const data = await r.json();
     if (data.errors?.length) throw new Error(data.errors[0].message);
     return data.data;
 }
-function mihon(query, variables, timeout) {
+function mihon(query, variables, timeout, signal) {
     mihonStartup ??= startMihon().catch(error => { mihonStartup = undefined; throw error; });
-    return mihonStartup.then(connection => graph(connection, query, variables, timeout));
+    return mihonStartup.then(connection => graph(connection, query, variables, timeout, signal));
 }
 
 let selected = [];
+let installedKotatsu = [];
 if (fs.existsSync(selectionFile)) {
-    try { selected = JSON.parse(fs.readFileSync(selectionFile, 'utf8')); } catch { /* start with no sources */ }
-    if (!Array.isArray(selected)) selected = [];
+    try {
+        const saved = JSON.parse(fs.readFileSync(selectionFile, 'utf8'));
+        selected = Array.isArray(saved) ? saved : (saved.enabled || []);
+        installedKotatsu = Array.isArray(saved) ? saved.filter(key => key.startsWith('kotatsu:')) : (saved.kotatsu || []);
+    } catch { /* start with no sources */ }
+}
+function saveSources(enabled, kotatsuSources) {
+    const temp = selectionFile + '.new';
+    fs.writeFileSync(temp, JSON.stringify({ enabled: [...enabled], kotatsu: [...kotatsuSources] }));
+    fs.renameSync(temp, selectionFile);
+    selected = [...enabled];
+    installedKotatsu = [...kotatsuSources];
 }
 function media(engine, value, op = 'image') {
     const id = randomUUID();
@@ -131,59 +155,101 @@ function media(engine, value, op = 'image') {
     return 'image/' + id;
 }
 function sourceKey(row) { return row.engine + ':' + row.id; }
-async function listSources() {
-    const settled = await Promise.allSettled([
-        kotatsu('sources'),
-        mihon('{ sources { nodes { id displayName name lang extension { isInstalled } } } }')
-            .then(d => d.sources.nodes.filter(s => s.extension?.isInstalled)
-                .map(s => ({ id: s.id, name: s.name || s.displayName, lang: s.lang })))
-    ]);
-    const engines = ['kotatsu', 'mihon'];
+let kotatsuSources;
+let mihonSources;
+function rawSources(engine) {
+    if (engine === 'kotatsu') {
+        kotatsuSources ??= kotatsu('sources').catch(error => { kotatsuSources = undefined; throw error; });
+        return kotatsuSources;
+    }
+    mihonSources ??= mihon('{ sources { nodes { id displayName name lang extension { isInstalled pkgName contentWarning } } } }')
+        .then(d => d.sources.nodes.filter(s => s.extension?.isInstalled).map(s => ({
+            id: s.id, name: s.name || s.displayName, lang: s.lang,
+            packageId: s.extension.pkgName, warning: s.extension.contentWarning
+        }))).catch(error => { mihonSources = undefined; throw error; });
+    return mihonSources;
+}
+async function listSources(engines = ['kotatsu', 'mihon']) {
+    const settled = await Promise.allSettled(engines.map(rawSources));
+    const enabled = new Set(selected);
+    const installed = new Set(installedKotatsu);
     return {
         sources: settled.flatMap((r, i) => r.status === 'fulfilled'
-            ? r.value.map(x => ({ ...x, engine: engines[i], enabled: selected.includes(engines[i] + ':' + x.id) }))
+            ? r.value.map(x => {
+                const engine = engines[i];
+                const key = engine + ':' + x.id;
+                return { ...x, engine, enabled: enabled.has(key), installed: engine === 'mihon' || installed.has(key) };
+            })
             : []),
-        errors: settled.flatMap((r, i) => r.status === 'rejected' ? [engines[i] + ': ' + r.reason.message] : [])
+        unavailable: settled.filter(r => r.status === 'rejected').length
     };
 }
-async function searchSource(source, query) {
+async function searchSource(source, query, position = 0, signal) {
+    let rows;
+    let next;
     if (source.engine === 'kotatsu') {
-        const rows = await kotatsu('search', { source: source.id, query });
-        return rows.map(x => ({ ...x, cover: x.hasCover ? media('kotatsu', x.id, 'cover') : null }));
+        rows = await kotatsu('search', { source: source.id, query, offset: position, fast: Boolean(signal) }, signal);
+        next = rows.length ? position + rows.length : null;
+    } else {
+        const d = await mihon(
+            'mutation($s:LongString!,$q:String,$p:Int!,$t:FetchSourceMangaType!){fetchSourceManga(input:{source:$s,type:$t,page:$p,query:$q}){hasNextPage mangas{id title thumbnailUrl}}}',
+            { s: source.id, q: query || null, p: position + 1, t: query ? 'SEARCH' : 'POPULAR' }, 25000, signal);
+        const { mangas, hasNextPage } = d.fetchSourceManga;
+        rows = mangas;
+        next = hasNextPage ? position + 1 : null;
     }
-    const d = await mihon(
-        'mutation($s:LongString!,$q:String!){fetchSourceManga(input:{source:$s,type:SEARCH,page:1,query:$q}){mangas{id title thumbnailUrl}}}',
-        { s: source.id, q: query });
-    return d.fetchSourceManga.mangas.slice(0, 30)
-        .map(x => ({ id: String(x.id), title: x.title, cover: x.thumbnailUrl ? media('mihon', x.thumbnailUrl) : null }));
+    const matching = query ? rankResults(rows, query) : rows;
+    return {
+        next,
+        rows: matching.map(x => ({
+            id: String(x.id), title: x.title, relevance: x.relevance, source,
+            cover: x.hasCover ? media('kotatsu', x.id, 'cover') :
+                x.thumbnailUrl ? media('mihon', x.thumbnailUrl) : null
+        }))
+    };
 }
-async function search(query) {
-    if (typeof query !== 'string' || !query.trim() || query.length > 150) throw new Error('Digite um título válido.');
-    const catalog = await listSources();
-    const sources = catalog.sources.filter(s => s.enabled);
-    if (!sources.length) return { rows: [], errors: catalog.errors, searched: 0 };
-    const bySource = new Array(sources.length);
-    const errors = [...catalog.errors];
+async function search(query, emit, signal) {
+    const engines = ['kotatsu', 'mihon'].filter(engine => selected.some(key => key.startsWith(engine + ':')));
+    const catalog = await listSources(engines);
+    const sources = catalog.sources.filter(s => s.enabled && !isAdultSource(s));
+    sources.sort((a, b) => (sourceHealth.get(sourceKey(b)) ?? 0) - (sourceHealth.get(sourceKey(a)) ?? 0));
+    emit({ type: 'start', total: sources.length, unavailable: catalog.unavailable });
     let index = 0;
+    let failed = 0;
     async function run() {
-        while (index < sources.length) {
-            const i = index++;
-            const source = sources[i];
-            try { bySource[i] = await searchSource(source, query.trim()); }
-            catch (error) { errors.push(source.name + ': ' + error.message); }
+        while (index < sources.length && !signal.aborted) {
+            const source = sources[index++];
+            const key = sourceKey(source);
+            const limit = new AbortController();
+            const abort = () => limit.abort();
+            signal.addEventListener('abort', abort, { once: true });
+            const timer = setTimeout(abort, 11000);
+            let rows = [];
+            try {
+                ({ rows } = await searchSource(source, query, 0, limit.signal));
+                sourceHealth.set(key, rows.length ? 2 : 1);
+            } catch (error) {
+                if (signal.aborted) return;
+                sourceHealth.set(key, -1);
+                failed++;
+                reportFailure('search ' + key, error);
+            } finally {
+                clearTimeout(timer);
+                signal.removeEventListener('abort', abort);
+            }
+            if (!signal.aborted) emit({ type: 'source', source, rows, failed });
         }
     }
-    await Promise.all(Array.from({ length: Math.min(6, sources.length) }, run));
-    const rows = [];
-    for (let rank = 0; rank < 30; rank++) {
-        for (let i = 0; i < sources.length; i++) {
-            const item = bySource[i]?.[rank];
-            if (item) rows.push({ ...item, source: sources[i] });
-        }
-    }
-    return { rows, errors, searched: sources.length };
+    await Promise.all(Array.from({ length: Math.min(16, sources.length) }, run));
+    emit({ type: 'done' });
 }
+const sourceHealth = new Map();
 
+function validateQuery(query, allowEmpty = false) {
+    if (typeof query !== 'string' || query.length > 150 || (!allowEmpty && !normalize(query)))
+        throw new Error('Digite um título válido.');
+    return query.trim();
+}
 function idNumber(id) {
     if (typeof id !== 'string' || !/^\d{1,10}$/.test(id) || Number(id) > 2147483647)
         throw new Error('Item inválido.');
@@ -192,28 +258,43 @@ function idNumber(id) {
 async function command(body) {
     switch (body.op) {
         case 'sources': return listSources();
-        case 'enable': {
-            if (typeof body.enabled !== 'boolean') throw new Error('Seleção inválida.');
-            const c = await listSources();
-            const source = c.sources.find(s => sourceKey(s) === body.key);
-            if (!source) throw new Error('Fonte indisponível.');
-            const next = new Set(selected);
-            if (body.enabled) next.add(body.key); else next.delete(body.key);
-            const temp = selectionFile + '.new';
-            fs.writeFileSync(temp, JSON.stringify([...next]));
-            fs.renameSync(temp, selectionFile);
-            selected = [...next];
+        case 'enable':
+        case 'installKotatsu': {
+            const installing = body.op === 'installKotatsu';
+            const keys = body.keys ?? [body.key];
+            const enabled = installing || body.enabled;
+            if (!Array.isArray(keys) || keys.length > 5000 || typeof enabled !== 'boolean' ||
+                keys.some(key => typeof key !== 'string' || !/^(kotatsu|mihon):[\w-]+$/.test(key)))
+                throw new Error('Seleção inválida.');
+            const engines = [...new Set(keys.map(key => key.split(':')[0]))];
+            const c = await listSources(engines);
+            const valid = new Set(c.sources.filter(s => installing ? s.engine === 'kotatsu' : s.installed).map(sourceKey));
+            if (keys.some(key => !valid.has(key))) throw new Error('Fonte indisponível.');
+            const nextEnabled = new Set(selected);
+            const nextInstalled = new Set(installedKotatsu);
+            for (const key of keys) {
+                if (installing) nextInstalled.add(key);
+                if (enabled) nextEnabled.add(key); else nextEnabled.delete(key);
+            }
+            saveSources(nextEnabled, nextInstalled);
             return true;
         }
-        case 'search': return search(body.query);
+        case 'catalog': {
+            if (!['kotatsu', 'mihon'].includes(body.engine) || !Number.isInteger(body.position) ||
+                body.position < 0 || body.position > 100000) throw new Error('Catálogo indisponível.');
+            const c = await listSources([body.engine]);
+            const source = c.sources.find(s => s.id === body.id && s.installed);
+            if (!source) throw new Error('Fonte indisponível.');
+            return searchSource(source, validateQuery(body.query ?? '', true), body.position);
+        }
         case 'repo': {
             const u = new URL(body.url);
             if (u.protocol !== 'https:' || u.username || u.password) throw new Error('Use um repositório HTTPS.');
             return mihon('mutation($u:String!){addExtensionStore(input:{indexUrl:$u}){extensionStore{name indexUrl}}}', { u: u.href }, 55000);
         }
         case 'extensions': {
-            await mihon('mutation { fetchExtensions(input:{}) { clientMutationId } }', {}, 55000);
-            const r = await mihon('{ extensions { nodes { pkgName name lang isInstalled isObsolete } } }');
+            if (body.refresh) await mihon('mutation { fetchExtensions(input:{}) { clientMutationId } }', {}, 55000);
+            const r = await mihon('{ extensions { nodes { pkgName name lang isInstalled isObsolete contentWarning } } }');
             return r.extensions.nodes.filter(e => !e.isObsolete);
         }
         case 'install': {
@@ -222,6 +303,7 @@ async function command(body) {
                 'mutation($id:String!){updateExtension(input:{id:$id,patch:{install:true}}){extension{pkgName isInstalled}}}',
                 { id: body.id }, 60000);
             if (!r.updateExtension?.extension?.isInstalled) throw new Error('A extensão não ficou instalada.');
+            mihonSources = undefined;
             return true;
         }
         case 'chapters':
@@ -286,10 +368,29 @@ http.createServer(async (req, res) => {
             let raw = '';
             for await (const chunk of req) {
                 raw += chunk;
-                if (raw.length > 10000) { res.writeHead(413).end(); return; }
+            if (raw.length > 200000) { res.writeHead(413).end(); return; }
             }
-            const data = await command(JSON.parse(raw));
-            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }).end(JSON.stringify(data));
+            const body = JSON.parse(raw);
+            if (body.op === 'search') {
+                const query = validateQuery(body.query);
+                const client = new AbortController();
+                setMaxListeners(0, client.signal);
+                res.once('close', () => client.abort());
+                res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8' });
+                res.flushHeaders();
+                const emit = event => {
+                    if (!client.signal.aborted) res.write(JSON.stringify(event) + '\n');
+                };
+                try { await search(query, emit, client.signal); }
+                catch (error) {
+                    reportFailure('search', error);
+                    emit({ type: 'unavailable' });
+                }
+                res.end();
+            } else {
+                const data = await command(body);
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }).end(JSON.stringify(data));
+            }
         } else if (req.method === 'GET' && route.startsWith('image/')) {
             const { type, bytes } = await readImage(images.get(route.slice(6)));
             res.writeHead(200, { 'Content-Type': type }).end(bytes);
@@ -301,6 +402,7 @@ http.createServer(async (req, res) => {
             res.writeHead(404).end();
         }
     } catch (error) {
+        reportFailure('request', error);
         res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
             .end(JSON.stringify({ error: error.message }));
     }

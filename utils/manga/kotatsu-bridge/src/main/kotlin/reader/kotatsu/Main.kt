@@ -75,7 +75,7 @@ private class Entries<T>(private val limit: Int) {
 }
 
 private val ctx = SourceContext()
-private val manga = Entries<Manga>(800)
+private val manga = Entries<Manga>(12000)
 private val chapters = Entries<MangaChapter>(6000)
 private val pages = Entries<MangaPage>(3000)
 private val sources = MangaParserSource.entries.filterNot { it.isBroken }.associateBy { it.name }
@@ -86,7 +86,10 @@ private fun info(source: MangaParserSource) = JSONObject().put("id", source.name
 private fun result(item: Manga): JSONObject {
     val id = item.source.name + "/" + item.id
     manga.put(id, item)
-    return JSONObject().put("id", id).put("title", item.title).put("hasCover", !item.coverUrl.isNullOrBlank())
+    return JSONObject().put("id", id).put("title", item.title)
+        .put("aliases", JSONArray(item.altTitles))
+        .put("adult", item.contentRating == ContentRating.ADULT)
+        .put("hasCover", !item.coverUrl.isNullOrBlank())
 }
 
 private fun image(url: String, source: MangaSource): JSONObject {
@@ -109,9 +112,17 @@ private suspend fun handle(input: JSONObject): Any = when (input.getString("op")
     "search" -> {
         val source = sources[input.getString("source")] ?: error("Fonte desconhecida.")
         val parser = ctx.parser(source)
-        val items = parser.getList(0, parser.availableSortOrders.first(),
-            MangaListFilter(query = input.getString("query")))
-        JSONArray(items.take(30).map(::result))
+        val query = input.getString("query")
+        val preferred = if (query.isBlank()) SortOrder.POPULARITY else SortOrder.RELEVANCE
+        val order = preferred.takeIf { it in parser.availableSortOrders } ?: parser.availableSortOrders.first()
+        val filter = if (query.isBlank()) MangaListFilter.EMPTY else MangaListFilter(query = query)
+        val offset = input.optInt("offset")
+        val items = if (input.optBoolean("fast")) {
+            withTimeout(10_000) { parser.getList(offset, order, filter) }
+        } else {
+            parser.getList(offset, order, filter)
+        }
+        JSONArray(items.map(::result))
     }
     "chapters" -> {
         val item = manga.get(input.getString("id"))
@@ -143,9 +154,9 @@ private suspend fun handle(input: JSONObject): Any = when (input.getString("op")
 }
 
 fun main() = runBlocking {
-    val output = System.out
+    val output = System.out.bufferedWriter(Charsets.UTF_8)
     System.setOut(System.err)
-    val workers = Dispatchers.IO.limitedParallelism(6)
+    val workers = Dispatchers.IO.limitedParallelism(20)
     System.`in`.bufferedReader(Charsets.UTF_8).useLines { lines ->
         lines.forEach { line ->
             launch(workers) {
@@ -156,7 +167,11 @@ fun main() = runBlocking {
                 } catch (e: Exception) {
                     reply.put("error", e.message ?: "A fonte não respondeu.")
                 }
-                synchronized(output) { output.println(reply.toString()) }
+                synchronized(output) {
+                    output.write(reply.toString())
+                    output.newLine()
+                    output.flush()
+                }
             }
         }
     }
