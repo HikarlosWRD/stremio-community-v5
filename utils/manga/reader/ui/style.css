@@ -46,8 +46,10 @@ button, input, select { transition: background-color var(--motion-fast) ease, bo
 .card { transition: transform var(--motion-main) var(--motion-ease), background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-main) var(--motion-ease); }
 .card:hover { transform: translateY(-3px); box-shadow: 0 9px 22px #0008; }
 main > :not(dialog), .recommendations-grid > .card { animation: ui-enter var(--motion-main) var(--motion-ease) both; }
-.recommendation-preview[open], .recommendation-preview .preview-swap { animation: ui-enter var(--motion-main) var(--motion-ease) both; }
+.recommendation-preview[open] { animation: ui-enter var(--motion-main) var(--motion-ease) both; }
+.recommendation-preview .preview-swap { animation: preview-fade var(--motion-main) ease-out both; }
 @keyframes ui-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes preview-fade { from { opacity: 0; } to { opacity: 1; } }
 .fullscreen-toggle { display: grid; place-items: center; flex: none; width: 40px; height: 40px; padding: 0; border-radius: 10px; background: #222; }
 .fullscreen-toggle svg { width: 20px; height: 20px; transition: transform var(--motion-fast) var(--motion-ease); }
 .fullscreen-toggle:hover svg { transform: scale(1.08); }
@@ -125,8 +127,10 @@ p { line-height: 1.45; }
 .collection-hero .recommendation-banner { filter: brightness(.55); }
 .collection-hero h1 { margin: 0; font-size: clamp(2rem, 4vw, 3.25rem); text-transform: uppercase; letter-spacing: .12em; }
 .recommendation-dice { position: absolute; top: 16px; right: 16px; width: 44px; height: 44px; padding: 0; background: #171717e8; font-size: 1.65rem; }
-.recommendation-preview { width: min(880px, 94vw); max-width: none; padding: 0; }
-.recommendation-preview .recommendation-hero { margin: 0; min-height: 330px; border: 0; border-radius: inherit; }
+.recommendation-preview { width: min(880px, 94vw); max-width: none; max-height: calc(100dvh - 32px); padding: 0; overflow: hidden; }
+.recommendation-preview .recommendation-hero { margin: 0; min-height: 330px; max-height: calc(100dvh - 32px); border: 0; border-radius: inherit; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; }
+.recommendation-preview .recommendation-banner { filter: blur(13px) brightness(.56) saturate(.88); transform: scale(1.08); }
+.recommendation-preview .recommendation-hero::before { background: linear-gradient(0deg, #101010ec 2%, #101010a8 55%, #1010107a), linear-gradient(90deg, #101010df, #10101050 76%); }
 .recommendation-preview .controls { margin-top: 14px; }
 .screen-hero { min-height: clamp(230px, 27vw, 340px); }
 .screen-hero .recommendation-info { align-items: center; }
@@ -140,7 +144,7 @@ p { line-height: 1.45; }
 .recommendation-info .work-cover { width: clamp(72px, 16vw, 140px); box-shadow: 0 8px 25px #0009; }
 .recommendation-info h1 { margin: 6px 0 0; overflow-wrap: anywhere; }
 .recommendation-info p { margin: 8px 0; }
-.recommendation-info .work-description p { max-height: 7em; overflow: auto; }
+.recommendation-info .work-description p { max-height: 7em; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; padding-right: 8px; }
 .recommendation-close { position: absolute; top: 12px; right: 12px; border-radius: 50%; width: 42px; height: 42px; padding: 0; font-size: 1.4rem; background: #171717e0; }
 .panel { border: 1px solid var(--border); padding: 15px; border-radius: 10px; margin: 15px 0; background: var(--panel); }
 .list { display: grid; gap: 6px; margin-top: 10px; }
