@@ -23,12 +23,23 @@ passagem exceder o limite da página, o leitor aplica apenas a primeira. Se nem
 a primeira couber, a imagem original é exibida. **Refinar cores** aplica
 interpolação bicúbica aos canais RGB mantendo o realce do Anime4K.
 
+O mesmo seletor oferece **Real-CUGAN 2×** (redução de ruído leve) e
+**Real-ESRGAN Anime 4×** (Anime 6B) pelo runtime ncnn Vulkan. Cada um tem
+escala fixa e processa a página original. O leitor prioriza páginas próximas,
+mantém a imagem atual durante a troca e guarda os resultados recentes do
+capítulo em memória. As opções Passagens e Refinar cores se aplicam ao Anime4K.
+
 A compatibilidade depende de cada fonte e do site. A ponte Kotatsu desta prévia
 não implementa páginas que exigem WebView, resolução de CAPTCHA ou remontagem de
 imagens embaralhadas. As falhas de consulta são resumidas na interface e
 registradas em `portable_config/manga/reader.log`.
 
 ## Empacotamento
+
+Para incluir os dois modelos Vulkan, execute
+`./utils/manga/prepare-upscale-models.ps1 -MangaRuntime CAMINHO_DO_RUNTIME`
+antes de montar o pacote. O script confere o SHA-256 das duas releases e
+prepara os arquivos em `models/` dentro do runtime.
 
 1. Com Java 21 e Gradle 9, execute `gradle -p utils/manga/kotatsu-bridge installDist`.
 2. Prepare uma pasta fora do repositório com o Java 21 para Windows x64 em

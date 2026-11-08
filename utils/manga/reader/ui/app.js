@@ -1,4 +1,4 @@
-import { upscaleImage } from './upscale.js';
+import { upscaleImage, upscaleNative } from './upscale.js';
 import { findChapters } from './chapter-list.mjs';
 import { compareAvailability } from './coverage.mjs';
 
@@ -688,7 +688,14 @@ async function chapters(item, back = catalog, loaded, previousQuery = '') {
     } catch { if (page === screen) errorText(status, 'Não foi possível carregar os capítulos. Tente novamente.'); }
 }
 
-const models = { S: 'Leve (S)', M: 'Médio (M)', L: 'Pesado (L)' };
+const models = {
+    realcugan: 'Real-CUGAN 2×',
+    realesrgan: 'Real-ESRGAN Anime 4×',
+    S: 'Anime4K Leve (S)',
+    M: 'Anime4K Médio (M)',
+    L: 'Anime4K Pesado (L)'
+};
+const nativeScales = { realcugan: 2, realesrgan: 4 };
 const storedModel = localStorage.getItem('manga-upscale-model');
 let upscaleModel = Object.hasOwn(models, storedModel) ? storedModel :
     (storedModel === 'off' || localStorage.getItem('manga-upscale') !== 'yes' ? 'off' : 'S');
@@ -736,7 +743,7 @@ async function reader(item, entries, index, returnToList) {
     zoomValue.setAttribute('aria-label', 'Restaurar zoom a 100%');
     const zoomButtons = el('div', '', 'reader-zoom');
     zoomButtons.append(smaller, zoomValue, larger);
-    const model = readerSelect('Upscale', [['off', 'Desligado'], ...Object.entries(models)],
+    const model = readerSelect('Modelo de upscale', [['off', 'Desligado'], ...Object.entries(models)],
         upscaleModel, value => { upscaleModel = value; updateUpscale(); });
     const passes = readerSelect('Passagens', [['1', '1 · 2×'], ['2', '2 · 4×']],
         String(repetitions), value => { repetitions = Number(value); updateUpscale(); });
@@ -754,8 +761,11 @@ async function reader(item, entries, index, returnToList) {
     window.scrollTo(0, 0);
 
     const near = new Set();
-    const enhancedPages = new Set();
+    const cache = new Map();
+    let cacheBytes = 0;
     let generation = 0;
+    let activeJob;
+    let scheduled = false;
 
     function setZoom(value) {
         const width = content.clientWidth;
@@ -784,9 +794,9 @@ async function reader(item, entries, index, returnToList) {
             if (change.isIntersecting) {
                 near.add(change.target);
                 change.target.loadPage();
-                processPage(change.target);
             } else near.delete(change.target);
         }
+        scheduleUpscale();
     }, { rootMargin: '500px 0px' });
     const resize = new ResizeObserver(entries => {
         if (entries[0].contentRect.width !== lastContentWidth) {
@@ -799,56 +809,114 @@ async function reader(item, entries, index, returnToList) {
     dispose = () => {
         observer.disconnect();
         resize.disconnect();
-        for (const figure of enhancedPages) URL.revokeObjectURL(figure.enhanced);
+        activeJob?.abort();
+        for (const { url } of cache.values()) URL.revokeObjectURL(url);
     };
 
+    function updateControls() {
+        const anime4k = upscaleModel !== 'off' && !nativeScales[upscaleModel];
+        passes.hidden = colorLabel.hidden = !anime4k;
+    }
     function updateUpscale() {
         localStorage.setItem('manga-upscale-model', upscaleModel);
         localStorage.setItem('manga-upscale-repetitions', String(repetitions));
         localStorage.setItem('manga-upscale-color', refineColor ? 'yes' : 'no');
-        passes.querySelector('select').disabled = upscaleModel === 'off';
-        color.disabled = upscaleModel === 'off';
+        updateControls();
         generation++;
+        activeJob?.abort();
         upscaleStatus.textContent = '';
-        for (const figure of enhancedPages) restorePage(figure);
-        if (upscaleModel !== 'off') near.forEach(processPage);
+        if (upscaleModel === 'off') {
+            for (const figure of pages.children) showOriginal(figure);
+        } else {
+            scheduleUpscale();
+        }
     }
-    function restorePage(figure) {
-        figure.ready = false;
-        figure.image.src = figure.original;
-        URL.revokeObjectURL(figure.enhanced);
-        enhancedPages.delete(figure);
-        figure.enhanced = undefined;
+    function showOriginal(figure) {
+        figure.enhancedImage?.remove();
+        figure.enhancedImage = undefined;
+        figure.displayed = undefined;
+        figure.image.hidden = !figure.ready;
     }
-    async function processPage(figure) {
-        if (upscaleModel === 'off' || !figure.ready || figure.enhanced || figure.upscaling) return;
-        const current = generation;
-        figure.upscaling = true;
-        try {
-            const result = await upscaleImage(figure.image, upscaleModel, repetitions, refineColor, () =>
-                page === screen && generation === current && near.has(figure));
-            if (!result || page !== screen || generation !== current || !near.has(figure)) return;
-            figure.enhanced = URL.createObjectURL(result.blob);
-            enhancedPages.add(figure);
-            figure.image.src = figure.enhanced;
-            upscaleStatus.textContent = result.width + ' × ' + result.height + ' px · ' +
-                (result.passes === 2 ? '4×' : '2×') + (result.passes < repetitions ? ' (limite da página)' : '');
-            if (enhancedPages.size > 12) {
-                const distant = [...enhancedPages].find(value => !near.has(value));
-                if (distant) restorePage(distant);
+    function scheduleUpscale() {
+        if (scheduled || activeJob || page !== screen || upscaleModel === 'off') return;
+        scheduled = true;
+        requestAnimationFrame(() => {
+            scheduled = false;
+            processNext();
+        });
+    }
+    function trimCache() {
+        for (const [key, value] of cache) {
+            if (cacheBytes <= 96 * 1024 * 1024 && cache.size <= 24) break;
+            if (value.figure.displayed === key) {
+                if (near.has(value.figure)) continue;
+                showOriginal(value.figure);
             }
+            cache.delete(key);
+            cacheBytes -= value.bytes;
+            URL.revokeObjectURL(value.url);
+        }
+    }
+    async function processNext() {
+        if (page !== screen || activeJob || upscaleModel === 'off') return;
+        const modelName = upscaleModel;
+        const scale = nativeScales[modelName];
+        const variant = scale ? modelName : [modelName, repetitions, refineColor].join(':');
+        const keyFor = figure => figure.original + ':' + variant;
+        const candidates = [...near].filter(figure => figure.ready &&
+            figure.displayed !== keyFor(figure) && figure.failedGeneration !== generation);
+        const center = window.innerHeight / 2;
+        const distance = figure => {
+            const rect = figure.getBoundingClientRect();
+            return Math.max(rect.top - center, center - rect.bottom, 0);
+        };
+        candidates.sort((a, b) => distance(a) - distance(b));
+        const figure = candidates[0];
+        if (!figure) return;
+        const key = keyFor(figure);
+        const current = generation;
+        const job = new AbortController();
+        activeJob = job;
+        const stillNeeded = () => page === screen && generation === current && !job.signal.aborted;
+        try {
+            let output = cache.get(key);
+            if (output) cache.delete(key);
+            else {
+                upscaleStatus.textContent = 'Processando ' + models[modelName] + '…';
+                const result = scale ? await upscaleNative(figure.image, modelName, scale, job.signal) :
+                    await upscaleImage(figure.image, modelName, repetitions, refineColor, stillNeeded);
+                if (!result || !stillNeeded()) return;
+                output = { figure, url: URL.createObjectURL(result.blob), bytes: result.blob.size,
+                    text: result.width + ' × ' + result.height + ' px · ' + models[modelName] +
+                        (!scale && result.passes < repetitions ? ' (limite da página)' : '') };
+                cacheBytes += output.bytes;
+            }
+            cache.set(key, output);
+            const enhanced = el('img');
+            enhanced.alt = figure.image.alt;
+            enhanced.src = output.url;
+            await enhanced.decode();
+            if (!stillNeeded() || !near.has(figure)) return;
+            figure.image.hidden = true;
+            figure.enhancedImage?.remove();
+            figure.enhancedImage = enhanced;
+            figure.displayed = key;
+            figure.prepend(enhanced);
+            upscaleStatus.textContent = output.text;
         } catch (error) {
-            if (page === screen && generation === current)
-                upscaleStatus.textContent = error.message + ' Exibindo a página original.';
+            if (stillNeeded()) {
+                figure.failedGeneration = current;
+                upscaleStatus.textContent = error.message;
+            }
         } finally {
-            figure.upscaling = false;
-            if (generation !== current && page === screen && near.has(figure)) processPage(figure);
+            trimCache();
+            activeJob = undefined;
+            scheduleUpscale();
         }
     }
 
     setZoom(zoom);
-    passes.querySelector('select').disabled = upscaleModel === 'off';
-    color.disabled = upscaleModel === 'off';
+    updateControls();
     try {
         const urls = await api('pages', { engine: item.source.engine, id: chapter.id });
         if (page !== screen) return;
@@ -874,7 +942,7 @@ async function reader(item, entries, index, returnToList) {
             image.onload = () => {
                 image.hidden = false;
                 figure.ready = true;
-                if (near.has(figure)) processPage(figure);
+                if (near.has(figure)) scheduleUpscale();
             };
             image.onerror = () => {
                 figure.ready = false;

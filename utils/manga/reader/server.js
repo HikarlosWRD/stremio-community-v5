@@ -9,6 +9,7 @@ const { createInterface } = require('node:readline');
 const { setMaxListeners } = require('node:events');
 const { normalize, rankResults, searchableSources } = require('./search-rules');
 const coverageRules = import('./coverage.mjs');
+const { restore } = require('./native-upscale');
 const coverageCache = new Map();
 
 const [token] = process.argv.slice(2);
@@ -480,6 +481,14 @@ http.createServer(async (req, res) => {
                 const data = await result;
                 res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }).end(JSON.stringify(data));
             }
+        } else if (req.method === 'POST' && route.startsWith('restore/')) {
+            if (req.headers.origin !== 'http://' + host || req.headers['x-reader-request'] !== '1') {
+                res.writeHead(403).end(); return;
+            }
+            const client = new AbortController();
+            res.once('close', () => client.abort());
+            const bytes = await restore(req, route.slice('restore/'.length), client.signal);
+            if (!client.signal.aborted) res.writeHead(200, { 'Content-Type': 'image/png' }).end(bytes);
         } else if (req.method === 'GET' && route.startsWith('image/')) {
             const { type, bytes } = await readImage(images.get(route.slice(6)));
             res.writeHead(200, { 'Content-Type': type }).end(bytes);
@@ -491,6 +500,7 @@ http.createServer(async (req, res) => {
             res.writeHead(404).end();
         }
     } catch (error) {
+        if (res.destroyed) return;
         reportFailure('request', error);
         res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' })
             .end(JSON.stringify({ error: error.message }));

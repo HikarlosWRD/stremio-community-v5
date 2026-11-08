@@ -204,3 +204,26 @@ export function upscaleImage(image, model, repetitions, refineColor, stillNeeded
     queue = job.catch(() => {});
     return job;
 }
+
+export async function upscaleNative(image, model, scale, signal) {
+    const { naturalWidth: width, naturalHeight: height } = image;
+    if (width * scale > 16384 || height * scale > 16384 || width * height * scale * scale > 24000000)
+        throw new Error('A página excede o limite de resolução deste modelo.');
+    signal.throwIfAborted();
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').drawImage(image, 0, 0);
+    const input = await new Promise((resolve, reject) => {
+        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Não foi possível preparar a página.')));
+    }).finally(() => { canvas.width = canvas.height = 1; });
+    const response = await fetch('restore/' + model, {
+        method: 'POST', headers: { 'Content-Type': 'image/png', 'x-reader-request': '1' },
+        body: input, signal
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || 'O modelo Vulkan não conseguiu processar esta página.');
+    }
+    return { blob: await response.blob(), width: width * scale, height: height * scale, scale };
+}
