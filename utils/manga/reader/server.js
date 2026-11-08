@@ -8,6 +8,8 @@ const { randomUUID } = require('node:crypto');
 const { createInterface } = require('node:readline');
 const { setMaxListeners } = require('node:events');
 const { normalize, rankResults, searchableSources } = require('./search-rules');
+const coverageRules = import('./coverage.mjs');
+const coverageCache = new Map();
 
 const [token] = process.argv.slice(2);
 const port = 11680;
@@ -184,7 +186,7 @@ async function listSources(engines = ['kotatsu', 'mihon']) {
         unavailable: settled.filter(r => r.status === 'rejected').length
     };
 }
-async function searchSource(source, query, position = 0, signal) {
+async function searchSource(source, query, position = 0, signal, includeAdult = false) {
     let rows;
     let next;
     if (source.engine === 'kotatsu') {
@@ -198,7 +200,7 @@ async function searchSource(source, query, position = 0, signal) {
         rows = mangas;
         next = hasNextPage ? position + 1 : null;
     }
-    const matching = query ? rankResults(rows, query) : rows;
+    const matching = query ? rankResults(rows, query, includeAdult) : rows;
     return {
         next,
         rows: matching.map(x => ({
@@ -208,11 +210,11 @@ async function searchSource(source, query, position = 0, signal) {
         }))
     };
 }
-async function search(query, scope, emit, signal) {
+async function search(query, scope, includeAdult, emit, signal) {
     const engines = ['kotatsu', 'mihon'].filter(engine =>
         scope === 'installed' || selected.some(key => key.startsWith(engine + ':')));
     const catalog = await listSources(engines);
-    const sources = searchableSources(catalog.sources, scope);
+    const sources = searchableSources(catalog.sources, scope, includeAdult);
     sources.sort((a, b) => (sourceHealth.get(sourceKey(b)) ?? 0) - (sourceHealth.get(sourceKey(a)) ?? 0));
     emit({ type: 'start', total: sources.length, unavailable: catalog.unavailable });
     let index = 0;
@@ -227,7 +229,7 @@ async function search(query, scope, emit, signal) {
             const timer = setTimeout(abort, 11000);
             let rows = [];
             try {
-                ({ rows } = await searchSource(source, query, 0, limit.signal));
+                ({ rows } = await searchSource(source, query, 0, limit.signal, includeAdult));
                 sourceHealth.set(key, rows.length ? 2 : 1);
             } catch (error) {
                 if (signal.aborted) return;
@@ -255,6 +257,56 @@ function idNumber(id) {
     if (typeof id !== 'string' || !/^\d{1,10}$/.test(id) || Number(id) > 2147483647)
         throw new Error('Item inválido.');
     return Number(id);
+}
+function chapterRows(engine, id, signal) {
+    if (engine === 'kotatsu') return kotatsu('chapters', { id }, signal);
+    if (engine !== 'mihon') throw new Error('Motor inválido.');
+    return mihon(
+        'mutation($id:Int!){fetchMangaAndChapters(input:{id:$id,fetchManga:true,fetchChapters:true}){chapters{id name chapterNumber sourceOrder}}}',
+        { id: idNumber(id) }, undefined, signal).then(d => d.fetchMangaAndChapters.chapters
+            .sort((a, b) => b.sourceOrder - a.sourceOrder)
+            .map(c => ({ id: String(c.id), name: c.name, number: c.chapterNumber })));
+}
+function chapterImages(engine, id, signal) {
+    if (engine === 'kotatsu') return kotatsu('pages', { id }, signal);
+    if (engine !== 'mihon') throw new Error('Motor inválido.');
+    return mihon('mutation($id:Int!){fetchChapterPages(input:{chapterId:$id}){pages}}',
+        { id: idNumber(id) }, undefined, signal).then(d => d.fetchChapterPages.pages);
+}
+async function coverage(engine, id) {
+    const key = engine + ':' + id;
+    const now = Date.now();
+    const cached = coverageCache.get(key);
+    if (cached && cached.expires > now) return cached.result;
+    const record = { expires: now + 30000 };
+    record.result = (async () => {
+        const { inspectCoverage } = await coverageRules;
+        const chapters = await chapterRows(engine, id, AbortSignal.timeout(7000));
+        const result = await inspectCoverage(chapters, async chapter => {
+            const deadline = AbortSignal.timeout(2900);
+            try {
+                const pages = await chapterImages(engine, chapter.id, deadline);
+                for (const value of pages.slice(0, 2)) {
+                    try {
+                        const { bytes } = await readImage({ engine, value, op: 'image' }, deadline);
+                        if (bytes.length > 0) return true;
+                    } catch {
+                        if (deadline.aborted) break;
+                    }
+                }
+            } catch { /* Keep testing subsequent chapter numbers. */ }
+            return false;
+        });
+        record.expires = Date.now() + (result.verified !== null ? 300000 : 60000);
+        return result;
+    })().catch(error => {
+        if (coverageCache.get(key) === record) coverageCache.delete(key);
+        throw error;
+    });
+    coverageCache.delete(key);
+    coverageCache.set(key, record);
+    if (coverageCache.size > 250) coverageCache.delete(coverageCache.keys().next().value);
+    return record.result;
 }
 async function command(body) {
     switch (body.op) {
@@ -315,7 +367,7 @@ async function command(body) {
             const c = await listSources([body.engine]);
             const source = c.sources.find(s => s.id === body.id && s.installed);
             if (!source) throw new Error('Fonte indisponível.');
-            return searchSource(source, validateQuery(body.query ?? '', true), body.position);
+            return searchSource(source, validateQuery(body.query ?? '', true), body.position, undefined, body.includeAdult === true);
         }
         case 'repo': {
             const u = new URL(body.url);
@@ -336,33 +388,24 @@ async function command(body) {
             mihonSources = undefined;
             return true;
         }
-        case 'chapters':
-            if (body.engine === 'kotatsu') return kotatsu('chapters', { id: body.id });
-            if (body.engine !== 'mihon') throw new Error('Motor inválido.');
-            return mihon(
-                'mutation($id:Int!){fetchMangaAndChapters(input:{id:$id,fetchManga:true,fetchChapters:true}){chapters{id name chapterNumber sourceOrder}}}',
-                { id: idNumber(body.id) }).then(d => d.fetchMangaAndChapters.chapters
-                    .sort((a, b) => b.sourceOrder - a.sourceOrder)
-                    .map(c => ({ id: String(c.id), name: c.name, number: c.chapterNumber })));
-        case 'pages':
-            if (body.engine === 'kotatsu') return (await kotatsu('pages', { id: body.id })).map(p => media('kotatsu', p));
-            if (body.engine !== 'mihon') throw new Error('Motor inválido.');
-            return mihon('mutation($id:Int!){fetchChapterPages(input:{chapterId:$id}){pages}}',
-                { id: idNumber(body.id) }).then(d => d.fetchChapterPages.pages.map(p => media('mihon', p)));
+        case 'chapters': return chapterRows(body.engine, body.id);
+        case 'pages': return (await chapterImages(body.engine, body.id)).map(p => media(body.engine, p));
+        case 'coverage': return coverage(body.engine, body.id);
         default: throw new Error('Operação inválida.');
     }
 }
-async function readImage(entry) {
+async function readImage(entry, signal) {
     if (!entry) throw new Error('Imagem expirou.');
     if (entry.engine === 'kotatsu') {
-        const { type, bytes } = await kotatsu(entry.op, { id: entry.value });
+        const { type, bytes } = await kotatsu(entry.op, { id: entry.value }, signal);
         if (!imageTypes.has(type)) throw new Error('Formato indisponível.');
         return { type, bytes: Buffer.from(bytes, 'base64') };
     }
     const connection = await mihonStartup;
     const uri = new URL(entry.value, connection.origin);
     if (uri.origin !== connection.origin || !uri.pathname.startsWith('/api/')) throw new Error('Rota de imagem inválida.');
-    const r = await fetch(uri, { headers: { authorization: connection.auth }, redirect: 'error', signal: AbortSignal.timeout(23000) });
+    const r = await fetch(uri, { headers: { authorization: connection.auth }, redirect: 'error',
+        signal: signal ?? AbortSignal.timeout(23000) });
     const type = r.headers.get('content-type')?.split(';')[0];
     if (!r.ok || !imageTypes.has(type)) throw new Error('Imagem indisponível.');
     const chunks = [];
@@ -383,6 +426,7 @@ const files = new Map([
     ['style.css', ['ui/style.css', 'text/css; charset=utf-8']],
     ['upscale.js', ['ui/upscale.js', 'text/javascript; charset=utf-8']],
     ['chapter-list.mjs', ['ui/chapter-list.mjs', 'text/javascript; charset=utf-8']],
+    ['coverage.mjs', ['coverage.mjs', 'text/javascript; charset=utf-8']],
     ...['S', 'M', 'L'].map(model => [
         'anime4k-' + model + '.glsl',
         ['../portable_config/shaders/Anime4K_Upscale_CNN_x2_' + model + '.glsl', 'text/plain; charset=utf-8']
@@ -419,7 +463,7 @@ http.createServer(async (req, res) => {
                 const emit = event => {
                     if (!client.signal.aborted) res.write(JSON.stringify(event) + '\n');
                 };
-                try { await search(query, scope, emit, client.signal); }
+                try { await search(query, scope, body.includeAdult === true, emit, client.signal); }
                 catch (error) {
                     reportFailure('search', error);
                     emit({ type: 'unavailable' });

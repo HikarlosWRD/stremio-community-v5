@@ -1,11 +1,13 @@
 import { upscaleImage } from './upscale.js';
 import { findChapters } from './chapter-list.mjs';
+import { compareAvailability } from './coverage.mjs';
 
 const view = document.querySelector('#view');
 const labels = { kotatsu: 'Kotatsu', mihon: 'Mihon' };
 let screen = 0;
 let lastQuery = '';
 let searchScope = localStorage.getItem('manga-search-scope') === 'installed' ? 'installed' : 'active';
+let includeAdult = localStorage.getItem('manga-include-adult') === 'yes';
 let lastResults;
 let dispose = () => {};
 
@@ -34,11 +36,11 @@ function begin() {
     view.replaceChildren();
     return ++screen;
 }
-async function api(op, values = {}) {
+async function api(op, values = {}, signal) {
     const response = await fetch('api', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-reader-request': '1' },
-        body: JSON.stringify({ op, ...values })
+        body: JSON.stringify({ op, ...values }), signal
     });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || 'O leitor retornou um erro.');
@@ -63,11 +65,48 @@ function workCard(item, back) {
     return card;
 }
 
+function coverageLabel(data) {
+    if (!data) return 'Verificando capítulos…';
+    if (data.first == null) return 'Faixa de capítulos indisponível';
+    const range = data.first === data.last ? 'Cap. ' + data.first : 'Cap. ' + data.first + '–' + data.last;
+    return range + ' listados · ' + (data.verified == null
+        ? 'início sem imagem confirmada' : 'cap. ' + data.verified + ' com imagem');
+}
+
+function coverageQueue() {
+    const controller = new AbortController();
+    const pending = [];
+    let active = 0;
+    function drain() {
+        if (controller.signal.aborted) return;
+        while (active < 4 && pending.length) {
+            const { item, updated } = pending.shift();
+            active++;
+            api('coverage', { engine: item.source.engine, id: item.id }, controller.signal)
+                .catch(() => ({})).then(data => {
+                    if (!controller.signal.aborted) {
+                        item.coverage = data;
+                        updated();
+                    }
+                }).finally(() => { active--; drain(); });
+        }
+    }
+    return {
+        add(item, updated) {
+            if (item.coverage) return;
+            pending.push({ item, updated });
+            pending.sort((a, b) => b.item.relevance - a.item.relevance);
+            drain();
+        },
+        stop() { controller.abort(); pending.length = 0; }
+    };
+}
+
 async function streamSearch(query, scope, signal, onEvent) {
     const response = await fetch('api', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-reader-request': '1' },
-        body: JSON.stringify({ op: 'search', query, scope }), signal
+        body: JSON.stringify({ op: 'search', query, scope, includeAdult }), signal
     });
     if (!response.ok) throw new Error();
     const reader = response.body.getReader();
@@ -101,6 +140,16 @@ function catalog() {
     const cancel = button('Parar busca', () => controller?.abort());
     cancel.hidden = true;
     const scope = el('select');
+    const adult = el('input');
+    adult.type = 'checkbox';
+    adult.checked = includeAdult;
+    const adultLabel = el('label', '', 'adult-flag');
+    adultLabel.append(adult, document.createTextNode('Incluir fontes +18'));
+    adult.onchange = () => {
+        includeAdult = adult.checked;
+        localStorage.setItem('manga-include-adult', includeAdult ? 'yes' : 'no');
+        if (input.value.trim()) form.requestSubmit();
+    };
     scope.setAttribute('aria-label', 'Fontes consultadas na busca');
     for (const [value, label] of [['active', 'Fontes ativadas'], ['installed', 'Todas as instaladas']]) {
         const option = el('option', label);
@@ -113,13 +162,22 @@ function catalog() {
         localStorage.setItem('manga-search-scope', searchScope);
         if (input.value.trim()) form.requestSubmit();
     };
-    form.append(input, scope, submit, cancel);
-    const status = el('p', 'A busca ignora fontes identificadas como 18+.', 'muted');
+    form.append(input, scope, submit, cancel, adultLabel);
+    const status = el('p', 'Os primeiros capítulos com imagem verificada aparecem primeiro.', 'muted');
     status.setAttribute('role', 'status');
     const groups = el('div');
     view.append(el('h1', 'Mangás, manhwas e webtoons'), form, status, groups);
     let controller;
-    dispose = () => controller?.abort();
+    let inspections = coverageQueue();
+    const views = new Map();
+    dispose = () => { controller?.abort(); inspections.stop(); };
+
+    function reorderGroups() {
+        const ordered = [...views.values()].sort((a, b) => compareAvailability(a.first, b.first));
+        ordered.forEach(({ section }, index) => {
+            if (groups.children[index] !== section) groups.insertBefore(section, groups.children[index] || null);
+        });
+    }
 
     function renderGroup(group) {
         const section = el('section', '', 'result-group');
@@ -127,21 +185,37 @@ function catalog() {
         heading.append(el('h2', sourceLabel(group.source)),
             button('Buscar nesta fonte', () => sourceCatalog(group.source, lastQuery, catalog)));
         const cards = el('div', '', 'grid');
+        const view = { section, first: group.rows[0] };
+        views.set(group, view);
+        const items = group.rows.map(item => {
+            const card = workCard(item, catalog);
+            const note = el('small', coverageLabel(item.coverage), 'chapter-coverage');
+            card.append(note);
+            return { item, card, note };
+        });
         const more = button('Mostrar todos (' + group.rows.length + ')', () => {
             group.expanded = true;
             fill();
         });
         function fill() {
-            const rows = group.expanded ? group.rows : group.rows.slice(0, 6);
-            cards.replaceChildren(...rows.map(item => workCard(item, catalog)));
+            items.sort((a, b) => compareAvailability(a.item, b.item));
+            view.first = items[0].item;
+            const rows = group.expanded ? items : items.slice(0, 6);
+            rows.forEach(({ card }, index) => {
+                if (cards.children[index] !== card) cards.insertBefore(card, cards.children[index] || null);
+            });
+            while (cards.children.length > rows.length) cards.lastElementChild.remove();
             more.hidden = group.expanded || rows.length === group.rows.length;
+            reorderGroups();
         }
-        fill();
         section.append(heading, cards, more);
-        const rank = group.rows[0].relevance;
-        section.dataset.rank = String(rank);
-        const before = Array.from(groups.children).find(child => Number(child.dataset.rank) < rank);
-        groups.insertBefore(section, before || null);
+        fill();
+        for (const { item, note } of items) {
+            inspections.add(item, () => {
+                note.textContent = coverageLabel(item.coverage);
+                fill();
+            });
+        }
     }
 
     function updateStatus(result, searching) {
@@ -169,6 +243,9 @@ function catalog() {
         const query = input.value.trim();
         if (!query) return;
         controller?.abort();
+        inspections.stop();
+        inspections = coverageQueue();
+        views.clear();
         const current = new AbortController();
         controller = current;
         cancel.hidden = false;
@@ -227,6 +304,9 @@ function sourceCatalog(source, initialQuery = '', back = settings) {
     let position = 0;
     let loading = false;
     const seen = new Set();
+    const inspected = [];
+    let inspections = coverageQueue();
+    dispose = () => inspections.stop();
     const reopen = () => sourceCatalog(source, query, back);
     async function load() {
         if (loading || position === null) return;
@@ -234,14 +314,27 @@ function sourceCatalog(source, initialQuery = '', back = settings) {
         submit.disabled = more.disabled = true;
         status.textContent = 'Carregando catálogo…';
         try {
-            const data = await api('catalog', { engine: source.engine, id: source.id, query, position });
+            const data = await api('catalog', { engine: source.engine, id: source.id, query, position, includeAdult });
             if (page !== screen) return;
             let added = 0;
             for (const item of data.rows) {
                 if (seen.has(item.id)) continue;
                 seen.add(item.id);
                 added++;
-                cards.append(workCard(item, reopen));
+                const card = workCard(item, reopen);
+                cards.append(card);
+                if (query) {
+                    const note = el('small', coverageLabel(item.coverage), 'chapter-coverage');
+                    card.append(note);
+                    inspected.push({ item, card });
+                    inspections.add(item, () => {
+                        note.textContent = coverageLabel(item.coverage);
+                        inspected.sort((a, b) => compareAvailability(a.item, b.item));
+                        inspected.forEach(({ card: tile }, index) => {
+                            if (cards.children[index] !== tile) cards.insertBefore(tile, cards.children[index] || null);
+                        });
+                    });
+                }
             }
             position = data.rows.length && !added ? null : data.next;
             status.textContent = seen.size ? seen.size + ' título(s).' :
@@ -258,6 +351,9 @@ function sourceCatalog(source, initialQuery = '', back = settings) {
         query = input.value.trim();
         position = 0;
         seen.clear();
+        inspected.length = 0;
+        inspections.stop();
+        inspections = coverageQueue();
         cards.replaceChildren();
         load();
     };
@@ -597,6 +693,7 @@ const storedModel = localStorage.getItem('manga-upscale-model');
 let upscaleModel = Object.hasOwn(models, storedModel) ? storedModel :
     (storedModel === 'off' || localStorage.getItem('manga-upscale') !== 'yes' ? 'off' : 'S');
 let repetitions = localStorage.getItem('manga-upscale-repetitions') === '2' ? 2 : 1;
+let refineColor = localStorage.getItem('manga-upscale-color') !== 'no';
 let zoom = 100;
 
 function readerSelect(label, choices, selected, onChange) {
@@ -643,9 +740,15 @@ async function reader(item, entries, index, returnToList) {
         upscaleModel, value => { upscaleModel = value; updateUpscale(); });
     const passes = readerSelect('Passagens', [['1', '1 · 2×'], ['2', '2 · 4×']],
         String(repetitions), value => { repetitions = Number(value); updateUpscale(); });
+    const color = el('input');
+    color.type = 'checkbox';
+    color.checked = refineColor;
+    color.onchange = () => { refineColor = color.checked; updateUpscale(); };
+    const colorLabel = el('label', '', 'reader-field color-flag');
+    colorLabel.append(color, document.createTextNode('Refinar cores'));
     const upscaleStatus = el('small', '', 'reader-upscale-status');
     upscaleStatus.setAttribute('role', 'status');
-    adjustments.append(el('strong', 'Zoom'), zoomButtons, model, passes, upscaleStatus);
+    adjustments.append(el('strong', 'Zoom'), zoomButtons, model, passes, colorLabel, upscaleStatus);
     layout.append(navigation, content, adjustments);
     view.append(layout);
     window.scrollTo(0, 0);
@@ -655,7 +758,9 @@ async function reader(item, entries, index, returnToList) {
     let generation = 0;
 
     function setZoom(value) {
-        const nextZoom = Math.max(50, Math.min(175, value));
+        const width = content.clientWidth;
+        const maxZoom = width ? Math.min(175, Math.floor(width / Math.min(width, 850) * 100)) : 100;
+        const nextZoom = Math.max(50, Math.min(maxZoom, value));
         const middle = window.innerHeight / 2;
         const anchor = [...near].find(figure => {
             const rect = figure.getBoundingClientRect();
@@ -666,8 +771,7 @@ async function reader(item, entries, index, returnToList) {
         pages.style.setProperty('--reader-zoom', String(zoom / 100));
         zoomValue.textContent = zoom + '%';
         smaller.disabled = zoom === 50;
-        larger.disabled = zoom === 175;
-        content.scrollLeft = (content.scrollWidth - content.clientWidth) / 2;
+        larger.disabled = zoom >= maxZoom;
         if (anchor && original?.height) {
             const rect = anchor.getBoundingClientRect();
             const relative = (middle - original.top) / original.height;
@@ -684,15 +788,26 @@ async function reader(item, entries, index, returnToList) {
             } else near.delete(change.target);
         }
     }, { rootMargin: '500px 0px' });
+    const resize = new ResizeObserver(entries => {
+        if (entries[0].contentRect.width !== lastContentWidth) {
+            lastContentWidth = entries[0].contentRect.width;
+            setZoom(zoom);
+        }
+    });
+    let lastContentWidth;
+    resize.observe(content);
     dispose = () => {
         observer.disconnect();
+        resize.disconnect();
         for (const figure of enhancedPages) URL.revokeObjectURL(figure.enhanced);
     };
 
     function updateUpscale() {
         localStorage.setItem('manga-upscale-model', upscaleModel);
         localStorage.setItem('manga-upscale-repetitions', String(repetitions));
+        localStorage.setItem('manga-upscale-color', refineColor ? 'yes' : 'no');
         passes.querySelector('select').disabled = upscaleModel === 'off';
+        color.disabled = upscaleModel === 'off';
         generation++;
         upscaleStatus.textContent = '';
         for (const figure of enhancedPages) restorePage(figure);
@@ -710,7 +825,7 @@ async function reader(item, entries, index, returnToList) {
         const current = generation;
         figure.upscaling = true;
         try {
-            const result = await upscaleImage(figure.image, upscaleModel, repetitions, () =>
+            const result = await upscaleImage(figure.image, upscaleModel, repetitions, refineColor, () =>
                 page === screen && generation === current && near.has(figure));
             if (!result || page !== screen || generation !== current || !near.has(figure)) return;
             figure.enhanced = URL.createObjectURL(result.blob);
@@ -733,6 +848,7 @@ async function reader(item, entries, index, returnToList) {
 
     setZoom(zoom);
     passes.querySelector('select').disabled = upscaleModel === 'off';
+    color.disabled = upscaleModel === 'off';
     try {
         const urls = await api('pages', { engine: item.source.engine, id: chapter.id });
         if (page !== screen) return;

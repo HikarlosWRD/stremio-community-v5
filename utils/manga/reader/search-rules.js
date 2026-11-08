@@ -9,7 +9,7 @@ function isAdultSource(source) {
     return source.kind === 'HENTAI' || source.warning === 'NSFW' || /hentai/i.test(source.name);
 }
 
-function rankResults(rows, query) {
+function rankResults(rows, query, includeAdult = false) {
     const title = normalize(query);
     if (!title) return [];
     const singleWord = !title.includes(' ');
@@ -22,7 +22,7 @@ function rankResults(rows, query) {
     }
     const ranked = new Map();
     for (const row of rows) {
-        if (row.adult || /^(pack (?:de )?(?:imagens|images)|doujinshi)\b/i.test(normalize(row.title))) continue;
+        if (!includeAdult && (row.adult || /^(pack (?:de )?(?:imagens|images)|doujinshi)\b/i.test(normalize(row.title)))) continue;
         const relevance = Math.max(score(normalize(row.title)), ...(row.aliases || []).map(x => score(normalize(x))));
         if (relevance > (ranked.get(row.id)?.relevance ?? 0))
             ranked.set(row.id, { ...row, relevance });
@@ -36,8 +36,9 @@ function rankResults(rows, query) {
     });
 }
 
-function searchableSources(rows, scope) {
-    return rows.filter(row => row.installed && (scope === 'installed' || row.enabled) && !isAdultSource(row));
+function searchableSources(rows, scope, includeAdult = false) {
+    return rows.filter(row => row.installed && (scope === 'installed' || row.enabled) &&
+        (includeAdult || !isAdultSource(row)));
 }
 
 module.exports = { normalize, rankResults, isAdultSource, searchableSources };

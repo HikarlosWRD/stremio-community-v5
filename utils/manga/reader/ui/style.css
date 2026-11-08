@@ -52,12 +52,15 @@ p { line-height: 1.45; }
 button[aria-pressed="true"] { background: #6746ac; border-color: #a68ee5; }
 .result-group { margin: 22px 0 28px; padding-top: 8px; border-top: 1px solid #433653; }
 .result-group .controls { justify-content: space-between; }
+.adult-flag { display: inline-flex; align-items: center; gap: 5px; }
+.chapter-coverage { line-height: 1.35; }
 .result-group > button, main > .grid + button { margin-top: 10px; }
 .source-actions { justify-content: flex-end; }
 dialog { max-width: min(34rem, 94vw); background: #211b32; color: inherit; border: 1px solid #5a4a74; border-radius: 12px; padding: 18px; }
 dialog::backdrop { background: #0b0814b8; }
 .reader { display: grid; grid-template-columns: 7rem minmax(0, 1fr) 10rem; gap: 12px; align-items: start; }
-.reader-content { text-align: center; overflow-x: auto; min-width: 0; }
+main:has(.reader) { max-width: none; }
+.reader-content { text-align: center; min-width: 0; }
 .reader-rail {
     position: sticky;
     top: 86px;
@@ -73,10 +76,11 @@ dialog::backdrop { background: #0b0814b8; }
 .reader-rail button { padding-inline: 5px; }
 .reader-field { display: grid; gap: 4px; font-size: .875rem; }
 .reader-field select { width: 100%; min-width: 0; padding: 6px; }
+.color-flag { display: flex; align-items: center; }
 .reader-zoom { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
 .reader-zoom button { flex: 1; white-space: nowrap; }
 .reader-upscale-status { overflow-wrap: anywhere; }
-.pages { width: calc(min(100%, 850px) * var(--reader-zoom, 1)); margin: 15px auto; background: #0c0a11; }
+.pages { width: min(100%, calc(min(100%, 850px) * var(--reader-zoom, 1))); margin: 15px auto; background: #0c0a11; }
 @media (max-width: 760px) {
     .reader { grid-template-columns: 5rem minmax(0, 1fr) 7rem; gap: 6px; }
     .reader-rail { padding: 5px; font-size: .8rem; }

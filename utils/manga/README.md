@@ -9,14 +9,19 @@ filtros de nome, idioma, motor e
 palavras excluídas também se aplicam à seleção em lote.
 
 Os resultados aparecem por fonte conforme as consultas terminam. A busca
-prioriza correspondências exatas e ignora fontes identificadas como 18+.
+prioriza o menor capítulo com imagem verificada. O cartão separa a faixa listada
+pela fonte do primeiro capítulo com imagem encontrada. A verificação amostra
+até quatro capítulos iniciais e não certifica toda a faixa. **Incluir fontes +18**
+vem desmarcado e é uma opção do usuário.
 Use **Todas as instaladas** para consultar também as fontes desativadas.
 A lista de capítulos exibe todas as entradas retornadas pela fonte e filtra por
 número ou título. O leitor carrega páginas sob demanda durante a rolagem vertical.
-As barras laterais oferecem navegação, zoom e Anime4K do Community nos modelos
+As barras laterais oferecem navegação, zoom que preserva toda a largura da página
+e Anime4K do Community nos modelos
 S, M e L. Uma passagem amplia a resolução em 2× e duas, em 4×. Se a segunda
 passagem exceder o limite da página, o leitor aplica apenas a primeira. Se nem
-a primeira couber, a imagem original é exibida.
+a primeira couber, a imagem original é exibida. **Refinar cores** aplica
+interpolação bicúbica aos canais RGB mantendo o realce do Anime4K.
 
 A compatibilidade depende de cada fonte e do site. A ponte Kotatsu desta prévia
 não implementa páginas que exigem WebView, resolução de CAPTCHA ou remontagem de
