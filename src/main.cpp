@@ -1,7 +1,9 @@
 #pragma comment(linker, "/SUBSYSTEM:WINDOWS")
 #pragma comment(linker, "/ENTRY:mainCRTStartup")
 
+#ifdef STREMIO_DISCORD_RPC
 #include "discord_rpc.h"
+#endif
 #include <windows.h>
 #include <VersionHelpers.h>
 #include <gdiplus.h>
@@ -68,16 +70,6 @@ int main(int argc, char *argv[]) {
   }
   g_launchProtocol = launchProtocol;
 
-  // check stremio-runtime duplicates
-  std::vector<std::wstring> processesToCheck = {L"stremio.exe",
-                                                L"stremio-runtime.exe"};
-  if (IsDuplicateProcessRunning(processesToCheck)) {
-    MessageBoxW(nullptr,
-                L"An older version of Stremio or Stremio server may be "
-                L"running. There could be issues.",
-                L"Stremio Already Running", MB_OK | MB_ICONWARNING);
-  }
-
   // init GDI+
   Gdiplus::GdiplusStartupInput gpsi;
   if (Gdiplus::GdiplusStartup(&g_gdiplusToken, &gpsi, nullptr) != Gdiplus::Ok) {
@@ -88,12 +80,9 @@ int main(int argc, char *argv[]) {
   // Load config
   LoadSettings();
 
-  // Initialize Discord RPC
-  InitializeDiscord();
-
-  // Updater
-  g_updaterThread = std::thread(RunAutoUpdaterOnce);
-  g_updaterThread.detach();
+#ifdef STREMIO_DISCORD_RPC
+  if (g_isRpcOn) InitializeDiscord();
+#endif
 
   g_hInst = GetModuleHandle(nullptr);
   g_darkBrush = CreateSolidBrush(RGB(0, 0, 0));
@@ -160,11 +149,18 @@ int main(int argc, char *argv[]) {
   // message loop
   MSG msg;
   while (GetMessage(&msg, nullptr, 0, 0)) {
+    if (msg.message == WM_KEYDOWN && msg.wParam == 'U' &&
+        GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_SHIFT) < 0 &&
+        GetKeyState(VK_MENU) >= 0) {
+      if (!(msg.lParam & (1L << 30))) PostMessage(g_hWnd, WM_UPSCALE_MENU, 0, 0);
+      continue;
+    }
     TranslateMessage(&msg);
     DispatchMessage(&msg);
 
-    // Run Discord RPC callbacks
-    Discord_RunCallbacks();
+#ifdef STREMIO_DISCORD_RPC
+    if (g_isRpcOn) Discord_RunCallbacks();
+#endif
   }
 
   if (g_darkBrush) {

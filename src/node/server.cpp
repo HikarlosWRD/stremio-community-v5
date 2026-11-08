@@ -25,6 +25,10 @@ static void NodeOutputThreadProc()
 
 bool StartNodeServer()
 {
+    // The installed Community shell and the preview use the same local endpoint.
+    // Reuse a running service without attaching it to this process's job object.
+    if (IsEndpointReachable(L"http://127.0.0.1:11470/settings")) return true;
+
     std::wstring exeDir   = GetExeDirectory();
     std::wstring exePath = exeDir + L"\\stremio-runtime.exe";
     std::wstring scriptPath = exeDir + L"\\server.js";
@@ -91,9 +95,9 @@ bool StartNodeServer()
 
     SetEnvironmentVariableW(L"NO_CORS", L"1");
     BOOL success = CreateProcessW(
-        nullptr, &cmdLine[0],
+        exePath.c_str(), &cmdLine[0],
         nullptr,nullptr, TRUE,
-        CREATE_NO_WINDOW,nullptr,nullptr,
+        CREATE_NO_WINDOW,nullptr,exeDir.c_str(),
         &si, &pi
     );
     CloseHandle(inR);

@@ -11,6 +11,7 @@ std::wstring Utf8ToWstring(const std::string& utf8Str);
 std::string ToLowerStr(std::string s);
 std::string decodeURIComponent(const std::string& encoded);
 std::wstring GetExeDirectory();
+bool IsEndpointReachable(const std::wstring& url);
 std::wstring GetFirstReachableUrl();
 std::wstring MakeInjectCssScript(const std::wstring& idSafe, const std::string& cssUtf8);
 std::wstring MakeInjectJsScript(const std::wstring& idSafe, const std::string& jsUtf8);

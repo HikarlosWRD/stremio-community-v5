@@ -1,5 +1,8 @@
 #include <iostream>
 #include "../core/globals.h"
+#include "discord.h"
+
+#ifdef STREMIO_DISCORD_RPC
 #include "crashlog.h"
 #include "discord_rpc.h"
 
@@ -164,3 +167,6 @@ void SetDiscordPresenceFromArgs(const std::vector<std::string>& args) {
     }
     // Add more presence types here...
 }
+#else
+void SetDiscordPresenceFromArgs(const std::vector<std::string>&) {}
+#endif

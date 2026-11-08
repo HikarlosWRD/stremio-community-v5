@@ -27,7 +27,7 @@ void CreateTrayIcon(HWND hWnd)
     HICON hIcon = LoadIcon(g_hInst, MAKEINTRESOURCE(IDR_MAINFRAME));
     g_nid.hIcon = hIcon;
 
-    _tcscpy_s(g_nid.szTip, _T("Stremio SingleInstance"));
+    _tcscpy_s(g_nid.szTip, _T("Stremio Upscale Preview"));
 
     Shell_NotifyIcon(NIM_ADD,&g_nid);
 }
@@ -125,6 +125,7 @@ static void ShowDarkTrayMenu()
     g_menuItems.push_back({ ID_TRAY_PAUSE_FOCUS_LOST, g_pauseOnLostFocus, false, L"Pause Unfocused" });
     g_menuItems.push_back({ ID_TRAY_CLOSE_ON_EXIT, g_closeOnExit,  false, L"Close on Exit" });
     g_menuItems.push_back({ ID_TRAY_USE_DARK_THEME, g_useDarkTheme, false, L"Use Dark Theme" });
+    g_menuItems.push_back({ ID_TRAY_UPSCALE, false, false, L"Upscale..." });
     g_menuItems.push_back({ 0, false, true, L"" });
     g_menuItems.push_back({ ID_TRAY_QUIT, false, false, L"Quit" });
 

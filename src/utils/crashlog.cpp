@@ -9,7 +9,9 @@
 #include "../utils/helpers.h"
 #include <gdiplus.h>
 #include <sstream>
+#ifdef STREMIO_DISCORD_RPC
 #include "discord_rpc.h"
+#endif
 
 #include "config.h"
 
@@ -66,7 +68,9 @@ void Cleanup()
         Gdiplus::GdiplusShutdown(g_gdiplusToken);
     }
 
-    Discord_Shutdown();
+#ifdef STREMIO_DISCORD_RPC
+    if (g_isRpcOn) Discord_Shutdown();
+#endif
 
     UnregisterHotKey(g_hWnd, 1);
 }

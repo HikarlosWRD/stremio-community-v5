@@ -43,7 +43,8 @@ bool FocusExistingInstance(const std::wstring &protocolArg)
 
 bool CheckSingleInstance(int argc, char* argv[], std::wstring &outProtocolArg)
 {
-    g_hMutex = CreateMutexW(nullptr, FALSE, L"SingleInstanceMtx_StremioWebShell");
+    g_hMutex = CreateMutexW(nullptr, FALSE, L"SingleInstanceMtx_StremioUpscalePreview");
+    const bool alreadyRunning = GetLastError() == ERROR_ALREADY_EXISTS;
     if(!g_hMutex){
         std::wcerr << L"CreateMutex failed => fallback to multi.\n";
         AppendToCrashLog("CreateMutex failed => fallback to multi.");
@@ -62,7 +63,7 @@ bool CheckSingleInstance(int argc, char* argv[], std::wstring &outProtocolArg)
         }
     }
 
-    if(GetLastError()==ERROR_ALREADY_EXISTS){
+    if(alreadyRunning){
         FocusExistingInstance(protocolArg);
         return false;
     }
@@ -178,8 +179,6 @@ void HandleEvent(const std::string &ev, std::vector<std::string> &args)
         g_isAppReady=true;
         HideSplash();
         PostMessage(g_hWnd, WM_NOTIFY_FLUSH, 0, 0);
-    } else if(ev=="update-requested"){
-        RunInstallerAndExit();
     } else if(ev == "seek-hover") {
         if (g_thumbFastHeight == 0) return;
         if(g_ignoreHover) {
@@ -442,10 +441,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     }
+    case WM_UPSCALE_MENU:
+        ShowUpscaleMenu(hWnd);
+        return 0;
     case WM_COMMAND:
     {
         switch(LOWORD(wParam))
         {
+        case ID_TRAY_UPSCALE:
+            ShowUpscaleMenu(hWnd);
+            break;
         case ID_TRAY_SHOWWINDOW:
             g_showWindow = !g_showWindow;
             ShowWindow(hWnd, g_showWindow?SW_SHOW:SW_HIDE);

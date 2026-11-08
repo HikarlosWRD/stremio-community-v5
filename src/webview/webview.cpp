@@ -286,6 +286,25 @@ void InitWebView2(HWND hWnd)
                     RECT rc; GetClientRect(hWnd,&rc);
                     g_webviewController->put_Bounds(rc);
 
+                    EventRegistrationToken upscaleKeyToken{};
+                    g_webviewController->add_AcceleratorKeyPressed(
+                        Microsoft::WRL::Callback<ICoreWebView2AcceleratorKeyPressedEventHandler>(
+                        [hWnd](ICoreWebView2Controller*, ICoreWebView2AcceleratorKeyPressedEventArgs* args) -> HRESULT {
+                            COREWEBVIEW2_KEY_EVENT_KIND kind{};
+                            UINT key = 0;
+                            args->get_KeyEventKind(&kind);
+                            args->get_VirtualKey(&key);
+                            if (kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN && key == 'U' &&
+                                (GetKeyState(VK_CONTROL) < 0) && (GetKeyState(VK_SHIFT) < 0) &&
+                                (GetKeyState(VK_MENU) >= 0)) {
+                                COREWEBVIEW2_PHYSICAL_KEY_STATUS status{};
+                                args->get_PhysicalKeyStatus(&status);
+                                args->put_Handled(TRUE);
+                                if (!status.WasKeyDown) PostMessage(hWnd, WM_UPSCALE_MENU, 0, 0);
+                            }
+                            return S_OK;
+                        }).Get(), &upscaleKeyToken);
+
                     g_webview->AddScriptToExecuteOnDocumentCreated(EXEC_SHELL_SCRIPT,nullptr);
                     g_webview->AddScriptToExecuteOnDocumentCreated(INJECTED_KEYDOWN_SCRIPT,nullptr);
 

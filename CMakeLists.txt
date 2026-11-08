@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 option(DEBUG_LOG "Allow debug logs" ON)
+option(STREMIO_DISCORD_RPC "Build with the upstream Discord RPC extension" OFF)
 
 # Locate MPV
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -26,7 +27,6 @@ else()
     set(DISCORD_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/discord-rpc/win32-static/include")
 endif()
 
-include_directories(${DISCORD_INCLUDE_DIR})
 include_directories(${MPV_INCLUDE_DIR})
 
 find_package(OpenSSL REQUIRED)
@@ -82,8 +82,13 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         OpenSSL::Crypto
         CURL::libcurl
         ${MPV_LIBRARY}
-        ${DISCORD_LIB}
 )
+
+if(STREMIO_DISCORD_RPC)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${DISCORD_INCLUDE_DIR})
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${DISCORD_LIB})
+    target_compile_definitions(${PROJECT_NAME} PRIVATE STREMIO_DISCORD_RPC)
+endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_LOG)
 
