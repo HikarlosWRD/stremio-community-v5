@@ -42,6 +42,93 @@ function savedCover(item) {
     return 'cover?' + new URLSearchParams({ engine: item.source.engine, id: item.id, title: item.title });
 }
 
+function saveWorkMetadata(work, details) {
+    if (details.chapters?.length || !work.chapters) work.chapters = details.chapters;
+    work.metadata = {
+        description: details.description || work.metadata?.description,
+        author: details.author || work.metadata?.author,
+        genres: details.genres?.length ? details.genres : work.metadata?.genres
+    };
+}
+
+const coverCacheName = 'manga-library-covers-v1';
+const coverJobs = new Map();
+const metadataJobs = new Set();
+const metadataQueue = [];
+let metadataActive = 0;
+
+function hydrateLibraryMetadata(item) {
+    const key = workKey(item);
+    if (metadataJobs.has(key)) return;
+    metadataJobs.add(key);
+    metadataQueue.push({ item, key });
+    runMetadataQueue();
+}
+
+function runMetadataQueue() {
+    while (metadataActive < 3 && metadataQueue.length) {
+        const { item, key } = metadataQueue.shift();
+        metadataActive++;
+        api('work', { engine: item.source.engine, id: item.id, title: item.title })
+            .then(metadata => {
+                if (savedWork(item)?.inLibrary)
+                    updateWork(item, current => saveWorkMetadata(current, metadata));
+            })
+            .catch(() => {})
+            .finally(() => {
+                metadataJobs.delete(key);
+                metadataActive--;
+                runMetadataQueue();
+            });
+    }
+}
+
+function coverCacheKey(item) {
+    return location.origin + '/library-cover/' + encodeURIComponent(workKey(item));
+}
+async function cacheLibraryCover(item) {
+    const key = coverCacheKey(item);
+    let job = coverJobs.get(key);
+    if (!job) {
+        job = fetchLibraryCover(item, key);
+        coverJobs.set(key, job);
+        job.finally(() => {
+            if (coverJobs.get(key) === job) coverJobs.delete(key);
+        }).catch(() => {});
+    }
+    const blob = await job;
+    return blob ? URL.createObjectURL(blob) : null;
+}
+
+async function fetchLibraryCover(item, key) {
+    const cache = await caches.open(coverCacheName);
+    let cached = await cache.match(key);
+    if (!cached) {
+        let response = await fetch(item.cover || savedCover(item)).catch(() => null);
+        if (!response?.ok) {
+            await api('work', { engine: item.source.engine, id: item.id, title: item.title });
+            response = await fetch(savedCover(item));
+        }
+        if (!response.ok || !response.headers.get('content-type')?.startsWith('image/')) return null;
+        cached = response;
+        if (savedWork(item)?.inLibrary) {
+            await cache.put(key, cached.clone());
+            if (!savedWork(item)?.inLibrary) await cache.delete(key);
+        }
+    }
+    return cached.blob();
+}
+function showLibraryCover(image, item) {
+    image.onerror = () => {};
+    cacheLibraryCover(item).then(url => {
+        if (!url) return;
+        if (!image.isConnected) { URL.revokeObjectURL(url); return; }
+        image.onload = () => URL.revokeObjectURL(url);
+        image.onerror = () => URL.revokeObjectURL(url);
+        image.src = url;
+    }).catch(() => {});
+}
+
 function library(home = false) {
     const data = readLibrary();
     const works = Object.values(data.works)
@@ -59,6 +146,12 @@ function library(home = false) {
     if (artwork) heading.append(artImage(artwork, 'recommendation-banner'));
     heading.append(el('h1', home ? 'Home' : 'Biblioteca'));
     view.append(heading);
+    if (featured && !featured.artwork) {
+        const banner = heading.querySelector('.recommendation-banner');
+        if (banner) showLibraryCover(banner, featured);
+        const image = ambient.querySelector('img');
+        if (image) showLibraryCover(image, featured);
+    }
     if (!works.length) {
         view.append(el('p', home ? 'Comece a ler uma obra da biblioteca para vê-la aqui.' :
             'Adicione uma obra à biblioteca para encontrá-la aqui.', 'muted'));
@@ -71,7 +164,11 @@ function library(home = false) {
         const item = { ...work.item, cover: savedCover(work.item) };
         const back = () => library(home);
         const tile = el('article', '', 'library-tile');
-        tile.append(workCard(item, back));
+        const card = workCard(item, back);
+        tile.append(card);
+        const image = card.querySelector('img');
+        if (image) showLibraryCover(image, item);
+        if (!work.metadata) hydrateLibraryMetadata(item);
         if (queue) queue.addBookmark(tile, item);
         if (home) {
             const progress = work.lastChapter;
@@ -619,6 +716,7 @@ function recommendations(state = { rows: [], next: 1, scroll: 0 }) {
             const work = candidates[Math.floor(Math.random() * candidates.length)];
             previous = work.id;
             const hero = recommendationHero({ work, back: close });
+            if (dialog.open) hero.classList.add('preview-swap');
             hero.querySelector('.recommendation-close').setAttribute('aria-label', 'Fechar prévia');
             const controls = el('div', '', 'controls');
             const reroll = button('⚄ Sortear outra', roll);
@@ -1087,14 +1185,23 @@ async function chapters(item, back = catalog, loaded, previousQuery = '', openId
     cover.src = item.cover || savedCover(item);
     cover.alt = 'Capa de ' + item.title;
     cover.onerror = () => cover.replaceWith(el('div', '', 'work-cover'));
+    if (savedWork(item)?.inLibrary) showLibraryCover(cover, item);
     const info = el('div', '', 'work-info');
     let details = loaded;
     const favorite = button('', () => {
         updateWork(item, work => {
             work.inLibrary = !work.inLibrary;
-            if (details) work.chapters = details.chapters;
+            if (details) saveWorkMetadata(work, details);
             work.updatedAt = Date.now();
         });
+        if (savedWork(item)?.inLibrary) cacheLibraryCover(item).then(url => {
+            if (!url) return;
+            if (!cover.isConnected) { URL.revokeObjectURL(url); return; }
+            cover.onload = () => URL.revokeObjectURL(url);
+            cover.onerror = () => URL.revokeObjectURL(url);
+            cover.src = url;
+        }).catch(() => {});
+        else caches.open(coverCacheName).then(cache => cache.delete(coverCacheKey(item))).catch(() => {});
         refreshFavorite();
     }, 'primary');
     function refreshFavorite() {
@@ -1108,10 +1215,19 @@ async function chapters(item, back = catalog, loaded, previousQuery = '', openId
     view.append(button('← Voltar aos títulos', back), hero, el('h2', 'Capítulos'), status, filters, list);
     window.scrollTo(0, 0);
     try {
-        details ??= await api('work', { engine: item.source.engine, id: item.id, title: item.title });
+        details ??= await api('work', { engine: item.source.engine, id: item.id, title: item.title })
+            .catch(error => {
+                const stored = savedWork(item);
+                if (stored?.inLibrary && stored.metadata && stored.chapters)
+                    return { ...stored.metadata, chapters: stored.chapters };
+                throw error;
+            });
         if (page !== screen) return;
         const entries = details.chapters;
-        if (savedWork(item)) updateWork(item, work => { work.chapters = entries; });
+        if (savedWork(item)) updateWork(item, work => {
+            work.chapters = entries;
+            if (work.inLibrary) saveWorkMetadata(work, details);
+        });
         if (details.author) info.append(el('p', details.author, 'work-author'));
         if (details.description?.trim()) {
             const synopsis = el('details', '', 'work-description');
@@ -1518,6 +1634,25 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
         scheduleTracking();
     } catch { if (page === screen) errorText(status, 'Não foi possível carregar as páginas. Tente novamente.'); }
 }
+
+const fullscreenToggle = document.querySelector('#toggle-fullscreen');
+function syncFullscreenToggle() {
+    const enabled = Boolean(document.fullscreenElement);
+    const label = enabled ? 'Sair da tela cheia' : 'Entrar em tela cheia';
+    fullscreenToggle.setAttribute('aria-pressed', String(enabled));
+    fullscreenToggle.setAttribute('aria-label', label);
+    fullscreenToggle.title = label;
+}
+fullscreenToggle.onclick = async () => {
+    try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        else await document.documentElement.requestFullscreen();
+    } catch {
+        fullscreenToggle.title = 'Não foi possível alternar a tela cheia';
+    }
+};
+document.addEventListener('fullscreenchange', syncFullscreenToggle);
+syncFullscreenToggle();
 
 document.querySelector('#home').onclick = () => window.chrome?.webview?.postMessage('manga-close');
 document.querySelector('#catalog').onclick = catalog;

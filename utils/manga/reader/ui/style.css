@@ -8,6 +8,9 @@
     --border: #414141;
     --muted: #c1c1c1;
     --hover: #333333;
+    --motion-fast: 160ms;
+    --motion-main: 240ms;
+    --motion-ease: cubic-bezier(.22, 1, .36, 1);
 }
 * { box-sizing: border-box; }
 body { margin: 0; }
@@ -39,6 +42,21 @@ button, input, select {
     color: inherit;
 }
 button { cursor: pointer; }
+button, input, select { transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease, box-shadow var(--motion-fast) ease; }
+.card { transition: transform var(--motion-main) var(--motion-ease), background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-main) var(--motion-ease); }
+.card:hover { transform: translateY(-3px); box-shadow: 0 9px 22px #0008; }
+main > :not(dialog), .recommendations-grid > .card { animation: ui-enter var(--motion-main) var(--motion-ease) both; }
+.recommendation-preview[open], .recommendation-preview .preview-swap { animation: ui-enter var(--motion-main) var(--motion-ease) both; }
+@keyframes ui-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.fullscreen-toggle { display: grid; place-items: center; flex: none; width: 40px; height: 40px; padding: 0; border-radius: 10px; background: #222; }
+.fullscreen-toggle svg { width: 20px; height: 20px; transition: transform var(--motion-fast) var(--motion-ease); }
+.fullscreen-toggle:hover svg { transform: scale(1.08); }
+.fullscreen-toggle .fullscreen-exit { display: none; }
+.fullscreen-toggle[aria-pressed="true"] .fullscreen-enter { display: none; }
+.fullscreen-toggle[aria-pressed="true"] .fullscreen-exit { display: block; }
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
 .adult-toggle { color: #ff8c9c; border-color: #a63c50; font-weight: 700; }
 .adult-toggle[aria-pressed="true"] { color: #a2efbd; border-color: #3d9c68; background: #1d4932; }
 .work-cover { width: 180px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 10px; flex-shrink: 0; background: #333; }
@@ -178,7 +196,8 @@ main:has(.reader) { max-width: none; }
 .page > button { margin: 10px; }
 @media (max-width: 570px) {
     header { gap: 8px; flex-wrap: wrap; }
-    header nav { width: 100%; }
+    header nav { width: 100%; order: 3; }
+    header .fullscreen-toggle { order: 2; margin-left: auto; }
     .work-hero, .recommendation-info { gap: 14px; }
     .screen-hero .recommendation-info { align-items: flex-start; }
     .reader-rail { top: 115px; }
