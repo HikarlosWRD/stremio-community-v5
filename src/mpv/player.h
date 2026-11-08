@@ -9,7 +9,6 @@
 bool InitMPV(HWND hwnd);
 void CleanupMPV();
 void HandleMpvEvents();
-void ShowUpscaleMenu(HWND hwnd);
 
 // Commands
 void HandleMpvCommand(const std::vector<std::string>& args);

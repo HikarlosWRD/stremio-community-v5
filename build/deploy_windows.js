@@ -28,6 +28,7 @@ const MPV_DLL = ARCH === 'x86'
     ? path.join(SOURCE_DIR, 'deps', 'libmpv', 'i686', 'libmpv-2.dll')
     : path.join(SOURCE_DIR, 'deps', 'libmpv', 'x86_64', 'libmpv-2.dll');
 const SERVER_JS = path.join(SOURCE_DIR, 'utils', 'windows', 'server.js');
+const STREAMING_PROFILE_JS = path.join(SOURCE_DIR, 'utils', 'windows', 'streaming-server.js');
 const STREMIO_RUNTIME_EXE = path.join(SOURCE_DIR, 'utils', 'windows', 'stremio-runtime.exe');
 const FFMPEG_FOLDER = path.join(SOURCE_DIR, 'utils', 'windows', 'ffmpeg');
 const MPV_FOLDER = path.join(SOURCE_DIR, 'utils', 'mpv', 'anime4k');
@@ -80,6 +81,7 @@ const VCPKG_CMAKE = 'G:\\Documents\\Github\\vcpkg\\scripts\\buildsystems\\vcpkg.
         // 6) Copy mpv DLL, server.js, node.exe
         copyFile(MPV_DLL, path.join(DIST_DIR, path.basename(MPV_DLL)));
         copyFile(SERVER_JS, path.join(DIST_DIR, path.basename(SERVER_JS)));
+        copyFile(STREAMING_PROFILE_JS, path.join(DIST_DIR, path.basename(STREAMING_PROFILE_JS)));
 
 
 

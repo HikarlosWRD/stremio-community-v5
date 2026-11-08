@@ -25,9 +25,11 @@ static void NodeOutputThreadProc()
 
 bool StartNodeServer()
 {
-    // The installed Community shell and the preview use the same local endpoint.
-    // Reuse a running service without attaching it to this process's job object.
-    if (IsEndpointReachable(L"http://127.0.0.1:11470/settings")) return true;
+    // Avoid changing another Stremio installation's cache and torrent profile.
+    if (IsEndpointReachable(L"http://127.0.0.1:11470/settings")) {
+        SetWindowTextW(g_hWnd, L"Stremio Community - Streaming Preview (servidor compartilhado)");
+        return true;
+    }
 
     std::wstring exeDir   = GetExeDirectory();
     std::wstring exePath = exeDir + L"\\stremio-runtime.exe";
@@ -91,7 +93,10 @@ bool StartNodeServer()
     si.dwFlags=STARTF_USESTDHANDLES;
 
     PROCESS_INFORMATION pi;ZeroMemory(&pi,sizeof(pi));
-    std::wstring cmdLine = L"\"stremio-runtime.exe\" \"server.js\"";
+    const bool hasStreamingProfile = FileExists(exeDir + L"\\streaming-server.js");
+    std::wstring cmdLine = hasStreamingProfile
+        ? L"\"stremio-runtime.exe\" \"streaming-server.js\""
+        : L"\"stremio-runtime.exe\" \"server.js\"";
 
     SetEnvironmentVariableW(L"NO_CORS", L"1");
     BOOL success = CreateProcessW(

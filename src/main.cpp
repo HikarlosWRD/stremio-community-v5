@@ -149,12 +149,6 @@ int main(int argc, char *argv[]) {
   // message loop
   MSG msg;
   while (GetMessage(&msg, nullptr, 0, 0)) {
-    if (msg.message == WM_KEYDOWN && msg.wParam == 'U' &&
-        GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_SHIFT) < 0 &&
-        GetKeyState(VK_MENU) >= 0) {
-      if (!(msg.lParam & (1L << 30))) PostMessage(g_hWnd, WM_UPSCALE_MENU, 0, 0);
-      continue;
-    }
     TranslateMessage(&msg);
     DispatchMessage(&msg);
 

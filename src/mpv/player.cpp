@@ -219,44 +219,6 @@ void pauseMPV(bool allowed)
     HandleMpvSetProp(pauseArgs);
 }
 
-void ShowUpscaleMenu(HWND hwnd)
-{
-    if (!g_mpv) return;
-
-    const struct { const wchar_t* label; const char* mode; } entries[] = {
-        {L"Desligado", "off"},
-        {L"NVIDIA RTX Video Super Resolution", "rtx"},
-        {L"Intel Video Super Resolution", "intel"},
-        {L"Anime4K - Performance", "anime_fast"},
-        {L"Anime4K - Qualidade", "anime_a"},
-        {L"FSRCNNX - Neural", "fsrcnnx"},
-        {L"AMD FSR 1 - Espacial", "fsr"},
-        {L"EWA Lanczos - Leve", "ewa"},
-        {L"Ver status", "status"},
-    };
-
-    HMENU menu = CreatePopupMenu();
-    if (!menu) return;
-    for (UINT i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
-        if (i == 8) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, i + 1, entries[i].label);
-    }
-
-    POINT point{};
-    GetCursorPos(&point);
-    SetForegroundWindow(hwnd);
-    const UINT choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                                       point.x, point.y, 0, hwnd, nullptr);
-    DestroyMenu(menu);
-    PostMessage(hwnd, WM_NULL, 0, 0);
-
-    if (choice && g_mpv) {
-        const char* args[] = {"script-message-to", "upscale_preview", "preset",
-                              entries[choice - 1].mode, nullptr};
-        mpv_command_async(g_mpv, 0, args);
-    }
-}
-
 bool InitMPV(HWND hwnd)
 {
     g_mpv = mpv_create();
