@@ -28,6 +28,30 @@ button, input, select {
     color: inherit;
 }
 button { cursor: pointer; }
+.adult-toggle { color: #ff8c9c; border-color: #a63c50; font-weight: 700; }
+.adult-toggle[aria-pressed="true"] { color: #a2efbd; border-color: #3d9c68; background: #1d4932; }
+.work-hero { display: flex; gap: 28px; align-items: flex-start; margin: 24px 0 36px; padding: 24px; border: 1px solid #51416a; border-radius: 18px; background: linear-gradient(130deg, #332645, #1c1829 70%); }
+.work-cover { width: 180px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 10px; flex-shrink: 0; background: #39304a; }
+.work-info h1 { margin-top: 0; }
+.work-description { color: #c9bfd8; line-height: 1.6; max-width: 65ch; }
+.chapter-row { display: flex; gap: 8px; }
+.chapter-open { text-align: left; flex: 1; }
+.chapter-read .chapter-open { color: #a99dbb; background: #191722; }
+.chapter-mark { width: 48px; color: #c4a5ff; }
+.bookmark-icon { display: inline-block; width: 12px; height: 16px; vertical-align: middle; background: currentColor; clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 73%, 0 100%, 0 0, 18% 15%, 18% 72%, 50% 55%, 82% 72%, 82% 15%, 18% 15%); }
+.chapter-mark[aria-pressed="true"] .bookmark-icon { clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 73%, 0 100%); }
+.library-heading { margin: 26px 0; padding: 24px; border-radius: 18px; background: linear-gradient(110deg, #382858, #211a31); }
+.library-heading small { color: #d6c0ff; font-size: .75rem; font-weight: 700; letter-spacing: .14em; }
+.library-heading h1 { margin: 4px 0 0; }
+.library-tile { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.home-chapter { text-align: left; font-size: .82rem; overflow-wrap: anywhere; }
+.home-chapter-read { color: #aea1c3; }
+.work-description p { white-space: pre-line; margin: 8px 0; }
+.work-description summary { cursor: pointer; font-weight: 600; color: #e5d8fb; }
+.work-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.work-tags span { border: 1px solid #55436b; border-radius: 20px; padding: 4px 9px; font-size: .8rem; color: #d9c9ef; }
+.chapter-end { padding: 16px; color: #c9bfd8; }
+@media (max-width: 570px) { .work-hero { gap: 14px; padding: 14px; } .work-cover { width: 100px; } }
 button:hover, button:focus-visible { border-color: #b09afa; background: #3a2c55; }
 button:disabled { cursor: default; opacity: .5; }
 button.primary { background: #6746ac; border-color: #a68ee5; }

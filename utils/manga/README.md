@@ -9,13 +9,20 @@ filtros de nome, idioma, motor e
 palavras excluídas também se aplicam à seleção em lote.
 
 Os resultados aparecem por fonte conforme as consultas terminam. A busca
-prioriza o menor capítulo com imagem verificada. O cartão separa a faixa listada
-pela fonte do primeiro capítulo com imagem encontrada. A verificação amostra
-até quatro capítulos iniciais e não certifica toda a faixa. **Incluir fontes +18**
-vem desmarcado e é uma opção do usuário.
+prioriza o menor capítulo com imagem verificada. O cartão mostra a faixa
+listada pela fonte. A verificação amostra até quatro capítulos iniciais.
+O botão **+18** fica vermelho quando desligado e verde quando ligado.
 Use **Todas as instaladas** para consultar também as fontes desativadas.
 A lista de capítulos exibe todas as entradas retornadas pela fonte e filtra por
 número ou título. O leitor carrega páginas sob demanda durante a rolagem vertical.
+
+Na página de uma obra, salve o título na **Biblioteca** e use o marcador ao lado
+do capítulo para alternar o estado de leitura. Ao chegar ao fim do capítulo,
+o leitor também o marca como lido. A **Home** mostra apenas títulos salvos e
+oferece atalhos para o último capítulo aberto e até dois seguintes.
+A biblioteca e o progresso ficam no perfil local do WebView em um formato
+versionado, com identificadores por fonte para uma futura sincronização.
+
 As barras laterais oferecem navegação, zoom que preserva toda a largura da página
 e Anime4K do Community nos modelos
 S, M e L. Uma passagem amplia a resolução em 2× e duas, em 4×. Se a segunda

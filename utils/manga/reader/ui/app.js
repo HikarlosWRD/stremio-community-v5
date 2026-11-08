@@ -10,6 +10,64 @@ let searchScope = localStorage.getItem('manga-search-scope') === 'installed' ? '
 let includeAdult = localStorage.getItem('manga-include-adult') === 'yes';
 let lastResults;
 let dispose = () => {};
+const libraryStorageKey = 'manga-library-v1';
+function readLibrary() {
+    try { return JSON.parse(localStorage.getItem(libraryStorageKey)) || { version: 1, works: {} }; }
+    catch { return { version: 1, works: {} }; }
+}
+function workKey(item) { return JSON.stringify([item.source.engine, String(item.id)]); }
+function saveLibrary(data) { localStorage.setItem(libraryStorageKey, JSON.stringify(data)); }
+function savedWork(item) { return readLibrary().works[workKey(item)]; }
+function updateWork(item, update) {
+    const data = readLibrary();
+    const key = workKey(item);
+    const existing = data.works[key] || { item, inLibrary: false, read: {} };
+    existing.item = { id: item.id, title: item.title, source: item.source };
+    update(existing);
+    data.works[key] = existing;
+    saveLibrary(data);
+}
+
+function savedCover(item) {
+    return 'cover?' + new URLSearchParams({ engine: item.source.engine, id: item.id, title: item.title });
+}
+
+function library(home = false) {
+    begin();
+    window.scrollTo(0, 0);
+    const heading = el('div', '', 'library-heading');
+    heading.append(el('small', 'MANGÁS'), el('h1', home ? 'Continue sua leitura' : 'Sua biblioteca'));
+    view.append(heading);
+    const works = Object.values(readLibrary().works).filter(work => work.inLibrary);
+    works.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    if (!works.length) {
+        view.append(el('p', 'Adicione uma obra à biblioteca para encontrá-la aqui.', 'muted'));
+        view.append(button('Explorar obras', catalog, 'primary'));
+        return;
+    }
+    const grid = el('div', '', 'grid');
+    for (const work of works) {
+        const item = { ...work.item, cover: savedCover(work.item) };
+        const back = () => library(home);
+        const tile = el('article', '', 'library-tile');
+        const card = workCard(item, back);
+        tile.append(card);
+        if (home) {
+            const entries = work.chapters || [];
+            const index = entries.findIndex(chapter => String(chapter.id) === work.lastChapter?.id);
+            const start = index < 0 ? entries.length - 1 : index;
+            const nearby = entries.slice(Math.max(0, start - 2), start + 1).reverse();
+            for (const chapter of nearby) {
+                const read = work.read?.[String(chapter.id)];
+                const shortcut = button(chapter.name, () => chapters(item, back, undefined, '', chapter.id), 'home-chapter');
+                if (read) shortcut.classList.add('home-chapter-read');
+                tile.append(shortcut);
+            }
+        }
+        grid.append(tile);
+    }
+    view.append(grid);
+}
 
 function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -69,8 +127,7 @@ function coverageLabel(data) {
     if (!data) return 'Verificando capítulos…';
     if (data.first == null) return 'Faixa de capítulos indisponível';
     const range = data.first === data.last ? 'Cap. ' + data.first : 'Cap. ' + data.first + '–' + data.last;
-    return range + ' listados · ' + (data.verified == null
-        ? 'início sem imagem confirmada' : 'cap. ' + data.verified + ' com imagem');
+    return range;
 }
 
 function coverageQueue() {
@@ -140,16 +197,14 @@ function catalog() {
     const cancel = button('Parar busca', () => controller?.abort());
     cancel.hidden = true;
     const scope = el('select');
-    const adult = el('input');
-    adult.type = 'checkbox';
-    adult.checked = includeAdult;
-    const adultLabel = el('label', '', 'adult-flag');
-    adultLabel.append(adult, document.createTextNode('Incluir fontes +18'));
-    adult.onchange = () => {
-        includeAdult = adult.checked;
+    const adultLabel = button('+18', () => {
+        includeAdult = !includeAdult;
+        adultLabel.setAttribute('aria-pressed', String(includeAdult));
         localStorage.setItem('manga-include-adult', includeAdult ? 'yes' : 'no');
         if (input.value.trim()) form.requestSubmit();
-    };
+    }, 'adult-toggle');
+    adultLabel.setAttribute('aria-label', 'Incluir fontes para maiores de 18 anos');
+    adultLabel.setAttribute('aria-pressed', String(includeAdult));
     scope.setAttribute('aria-label', 'Fontes consultadas na busca');
     for (const [value, label] of [['active', 'Fontes ativadas'], ['installed', 'Todas as instaladas']]) {
         const option = el('option', label);
@@ -656,29 +711,81 @@ async function settings() {
     await load();
 }
 
-async function chapters(item, back = catalog, loaded, previousQuery = '') {
+async function chapters(item, back = catalog, loaded, previousQuery = '', openId) {
     const page = begin();
     const status = el('p', 'Carregando capítulos…', 'muted');
     const filter = field('search', 'Filtrar capítulos por número ou título');
     filter.hidden = true;
     filter.value = previousQuery;
     const list = el('div', '', 'list');
-    view.append(button('← Voltar aos títulos', back), el('h1', item.title),
-        el('p', sourceLabel(item.source), 'muted'), status, filter, list);
+    const hero = el('section', '', 'work-hero');
+    const cover = el('img', '', 'work-cover');
+    cover.src = item.cover || savedCover(item);
+    cover.alt = 'Capa de ' + item.title;
+    cover.onerror = () => cover.replaceWith(el('div', '', 'work-cover'));
+    const info = el('div', '', 'work-info');
+    let details = loaded;
+    const favorite = button('', () => {
+        updateWork(item, work => {
+            work.inLibrary = !work.inLibrary;
+            if (details) work.chapters = details.chapters;
+            work.updatedAt = Date.now();
+        });
+        refreshFavorite();
+    }, 'primary');
+    function refreshFavorite() {
+        const active = !!savedWork(item)?.inLibrary;
+        favorite.textContent = active ? '♥ Na biblioteca' : '♡ Adicionar à biblioteca';
+        favorite.setAttribute('aria-pressed', String(active));
+    }
+    refreshFavorite();
+    info.append(el('h1', item.title), el('p', sourceLabel(item.source), 'muted'), favorite);
+    hero.append(cover, info);
+    view.append(button('← Voltar aos títulos', back), hero, el('h2', 'Capítulos'), status, filter, list);
     window.scrollTo(0, 0);
     try {
-        const entries = loaded ?? await api('chapters', { engine: item.source.engine, id: item.id });
+        details ??= await api('work', { engine: item.source.engine, id: item.id, title: item.title });
         if (page !== screen) return;
+        const entries = details.chapters;
+        if (savedWork(item)) updateWork(item, work => { work.chapters = entries; });
+        if (details.author) info.append(el('p', details.author, 'work-author'));
+        if (details.description?.trim()) {
+            const synopsis = el('details', '', 'work-description');
+            synopsis.append(el('summary', 'Sinopse'), el('p', details.description.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '')));
+            synopsis.open = true;
+            info.append(synopsis);
+        }
+        if (details.genres?.length) {
+            const tags = el('div', '', 'work-tags');
+            for (const genre of details.genres) tags.append(el('span', genre));
+            info.append(tags);
+        }
         filter.hidden = !entries.length;
+        const returnToList = () => chapters(item, back, details, filter.value);
+        const openIndex = openId == null ? -1 : entries.findIndex(entry => String(entry.id) === String(openId));
+        if (openIndex >= 0) { reader(item, entries, openIndex, returnToList); return; }
         function showChapters() {
             const matched = findChapters(entries, filter.value);
+            const marks = savedWork(item)?.read || {};
             status.textContent = !entries.length ? 'Nenhum capítulo disponível.' :
                 matched.length + ' de ' + entries.length + ' capítulo(s).';
             list.replaceChildren();
             const fragment = document.createDocumentFragment();
-            const returnToList = () => chapters(item, back, entries, filter.value);
-            for (const { entry, index } of matched)
-                fragment.append(button(entry.name, () => reader(item, entries, index, returnToList)));
+            for (const { entry, index } of matched) {
+                const row = el('div', '', 'chapter-row');
+                const isRead = !!marks[String(entry.id)];
+                if (isRead) row.classList.add('chapter-read');
+                const open = button(entry.name, () => reader(item, entries, index, returnToList), 'chapter-open');
+                const mark = button('', () => {
+                    updateWork(item, work => { work.read ||= {}; work.read[String(entry.id)] = !isRead; work.updatedAt = Date.now(); });
+                    showChapters();
+                }, 'chapter-mark');
+                mark.append(el('span', '', 'bookmark-icon'));
+                mark.setAttribute('aria-label', isRead ? 'Marcar ' + entry.name + ' como não lido' : 'Marcar ' + entry.name + ' como lido');
+                mark.setAttribute('aria-pressed', String(isRead));
+                row.append(open, mark);
+                fragment.append(row);
+            }
             if (entries.length && !matched.length)
                 fragment.append(el('small', 'Nenhum capítulo corresponde ao filtro.'));
             list.append(fragment);
@@ -920,6 +1027,16 @@ async function reader(item, entries, index, returnToList) {
     try {
         const urls = await api('pages', { engine: item.source.engine, id: chapter.id });
         if (page !== screen) return;
+        const completion = new IntersectionObserver(changes => {
+            if (page !== screen || !changes.some(change => change.isIntersecting)) return;
+            updateWork(item, work => { work.read[String(chapter.id)] = true; work.updatedAt = Date.now(); });
+            completion.disconnect();
+        });
+        const release = dispose;
+        dispose = () => { completion.disconnect(); release(); };
+        let startedReading = false;
+        const end = el('div', 'Fim do capítulo', 'chapter-end');
+        end.hidden = true;
         status.textContent = urls.length ? urls.length + ' página(s)' : 'Nenhuma página disponível.';
         urls.forEach((url, i) => {
             const figure = el('figure', '', 'page');
@@ -942,6 +1059,18 @@ async function reader(item, entries, index, returnToList) {
             image.onload = () => {
                 image.hidden = false;
                 figure.ready = true;
+                if (page === screen && !startedReading) {
+                    startedReading = true;
+                    updateWork(item, work => {
+                        work.lastChapter = { id: String(chapter.id), name: chapter.name };
+                        work.chapters = entries;
+                        work.updatedAt = Date.now();
+                    });
+                }
+                if (page === screen && i === urls.length - 1) {
+                    end.hidden = false;
+                    completion.observe(end);
+                }
                 if (near.has(figure)) scheduleUpscale();
             };
             image.onerror = () => {
@@ -953,10 +1082,13 @@ async function reader(item, entries, index, returnToList) {
             pages.append(figure);
             observer.observe(figure);
         });
+        if (urls.length) pages.append(end);
     } catch { if (page === screen) errorText(status, 'Não foi possível carregar as páginas. Tente novamente.'); }
 }
 
 document.querySelector('#home').onclick = () => window.chrome?.webview?.postMessage('manga-close');
 document.querySelector('#catalog').onclick = catalog;
+document.querySelector('#manga-home').onclick = () => library(true);
+document.querySelector('#library').onclick = () => library(false);
 document.querySelector('#sources').onclick = settings;
-catalog();
+library(true);

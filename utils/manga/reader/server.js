@@ -259,14 +259,22 @@ function idNumber(id) {
         throw new Error('Item inválido.');
     return Number(id);
 }
-function chapterRows(engine, id, signal) {
-    if (engine === 'kotatsu') return kotatsu('chapters', { id }, signal);
+async function workDetails(engine, id, title, signal) {
+    if (engine === 'kotatsu') return kotatsu('work', { id, title }, signal);
     if (engine !== 'mihon') throw new Error('Motor inválido.');
-    return mihon(
-        'mutation($id:Int!){fetchMangaAndChapters(input:{id:$id,fetchManga:true,fetchChapters:true}){chapters{id name chapterNumber sourceOrder}}}',
-        { id: idNumber(id) }, undefined, signal).then(d => d.fetchMangaAndChapters.chapters
-            .sort((a, b) => b.sourceOrder - a.sourceOrder)
-            .map(c => ({ id: String(c.id), name: c.name, number: c.chapterNumber })));
+    const data = await mihon(
+        'mutation($id:Int!){fetchMangaAndChapters(input:{id:$id,fetchManga:true,fetchChapters:true}){manga{description author genre} chapters{id name chapterNumber sourceOrder}}}',
+        { id: idNumber(id) }, undefined, signal);
+    const { manga, chapters } = data.fetchMangaAndChapters;
+    return {
+        description: manga.description, author: manga.author, genres: manga.genre,
+        chapters: chapters.sort((a, b) => b.sourceOrder - a.sourceOrder)
+            .map(c => ({ id: String(c.id), name: c.name, number: c.chapterNumber }))
+    };
+}
+async function chapterRows(engine, id, signal) {
+    if (engine === 'kotatsu') return kotatsu('chapters', { id }, signal);
+    return (await workDetails(engine, id, undefined, signal)).chapters;
 }
 function chapterImages(engine, id, signal) {
     if (engine === 'kotatsu') return kotatsu('pages', { id }, signal);
@@ -390,6 +398,7 @@ async function command(body) {
             return true;
         }
         case 'chapters': return chapterRows(body.engine, body.id);
+        case 'work': return workDetails(body.engine, body.id, String(body.title ?? '').slice(0, 500));
         case 'pages': return (await chapterImages(body.engine, body.id)).map(p => media(body.engine, p));
         case 'coverage': return coverage(body.engine, body.id);
         default: throw new Error('Operação inválida.');
@@ -492,6 +501,20 @@ http.createServer(async (req, res) => {
         } else if (req.method === 'GET' && route.startsWith('image/')) {
             const { type, bytes } = await readImage(images.get(route.slice(6)));
             res.writeHead(200, { 'Content-Type': type }).end(bytes);
+        } else if (req.method === 'GET' && route.startsWith('cover?')) {
+            const params = new URLSearchParams(route.slice(6));
+            const id = params.get('id');
+            let image;
+            if (params.get('engine') === 'kotatsu') {
+                const result = await kotatsu('cover', { id, title: (params.get('title') || '').slice(0, 500) });
+                if (!imageTypes.has(result.type)) throw new Error('Formato indisponível.');
+                image = { type: result.type, bytes: Buffer.from(result.bytes, 'base64') };
+            } else if (params.get('engine') === 'mihon') {
+                const { manga } = await mihon('query($id:Int!){manga(id:$id){thumbnailUrl}}', { id: idNumber(id) });
+                if (!manga.thumbnailUrl) { res.writeHead(404).end(); return; }
+                image = await readImage({ engine: 'mihon', value: manga.thumbnailUrl });
+            } else { res.writeHead(404).end(); return; }
+            res.writeHead(200, { 'Content-Type': image.type }).end(image.bytes);
         } else if (req.method === 'GET' && files.has(route)) {
             const [filename, type] = files.get(route);
             const data = fs.readFileSync(path.join(__dirname, filename));

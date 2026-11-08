@@ -72,6 +72,7 @@ private class Entries<T>(private val limit: Int) {
         if (items.size > limit) items.remove(items.keys.first())
     }
     @Synchronized fun get(id: String): T = items[id] ?: error("Item expirado. Abra a busca ou o capítulo novamente.")
+    @Synchronized fun find(id: String): T? = items[id]
 }
 
 private val ctx = SourceContext()
@@ -107,6 +108,20 @@ private fun image(url: String, source: MangaSource): JSONObject {
     }
 }
 
+private suspend fun savedManga(input: JSONObject): Manga {
+    val id = input.getString("id")
+    manga.find(id)?.let { return it }
+    val source = sources[id.substringBefore('/')] ?: error("Fonte desconhecida.")
+    val title = input.optString("title").takeIf { it.isNotBlank() } ?: return manga.get(id)
+    val parser = ctx.parser(source)
+    val order = SortOrder.RELEVANCE.takeIf { it in parser.availableSortOrders } ?: parser.availableSortOrders.first()
+    val results = parser.getList(0, order, MangaListFilter(query = title))
+    val item = results.firstOrNull { source.name + "/" + it.id == id }
+        ?: error("Obra não encontrada nesta fonte.")
+    manga.put(id, item)
+    return item
+}
+
 private suspend fun handle(input: JSONObject): Any = when (input.getString("op")) {
     "sources" -> JSONArray(sources.values.map(::info))
     "search" -> {
@@ -124,14 +139,18 @@ private suspend fun handle(input: JSONObject): Any = when (input.getString("op")
         }
         JSONArray(items.map(::result))
     }
-    "chapters" -> {
-        val item = manga.get(input.getString("id"))
+    "chapters", "work" -> {
+        val item = savedManga(input)
         val details = ctx.parser(item.source as MangaParserSource).getDetails(item)
-        JSONArray(details.chapters.orEmpty().asReversed().map { chapter ->
+        val rows = JSONArray(details.chapters.orEmpty().asReversed().map { chapter ->
             val id = item.source.name + "/" + chapter.id
             chapters.put(id, chapter)
             JSONObject().put("id", id).put("name", chapter.name).put("number", chapter.number)
         })
+        if (input.getString("op") == "chapters") rows
+        else JSONObject().put("chapters", rows).put("description", details.description)
+            .put("author", details.authors.joinToString(", "))
+            .put("genres", JSONArray(details.tags.map { it.title }))
     }
     "pages" -> {
         val chapter = chapters.get(input.getString("id"))
@@ -143,7 +162,7 @@ private suspend fun handle(input: JSONObject): Any = when (input.getString("op")
         })
     }
     "cover" -> {
-        val item = manga.get(input.getString("id"))
+        val item = savedManga(input)
         image(item.coverUrl ?: error("Capa indisponível."), item.source)
     }
     "image" -> {
