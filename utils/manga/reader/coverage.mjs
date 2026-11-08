@@ -28,7 +28,7 @@ export async function inspectCoverage(chapters, hasImage, signal) {
     if (verified !== null) {
         while (byNumber.has(verified + run)) run++;
     }
-    return { first: numbers[0] ?? null, last: numbers.at(-1) ?? null, verified, run, attempted };
+    return { count: chapters.length, first: numbers[0] ?? null, last: numbers.at(-1) ?? null, verified, run, attempted };
 }
 
 export function compareCoverage(a, b) {

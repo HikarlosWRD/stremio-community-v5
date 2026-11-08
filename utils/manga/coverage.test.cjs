@@ -12,9 +12,18 @@ test('chapter coverage separates listed range from the earliest readable start',
         return chapter.number >= 2;
     });
     assert.deepEqual(order, [0, 1, 2]);
-    assert.deepEqual(coverage, { first: 0, last: 200, verified: 2, run: 3, attempted: 3 });
+    assert.deepEqual(coverage, { count: 6, first: 0, last: 200, verified: 2, run: 3, attempted: 3 });
     assert.ok(compareCoverage({ first: 1, last: 7, verified: 1, run: 3 }, coverage) < 0);
     assert.ok(compareCoverage({ first: 0, verified: null, attempted: 4 }, coverage) > 0);
+});
+
+test('an unnumbered chapter is distinct from a confirmed empty list', async () => {
+    const { inspectCoverage } = await coverageRules;
+    const unnumbered = await inspectCoverage([{ name: 'Especial' }], async () => false);
+    const empty = await inspectCoverage([], async () => false);
+    assert.equal(unnumbered.first, null);
+    assert.equal(unnumbered.count, 1);
+    assert.equal(empty.count, 0);
 });
 
 test('early chapter probing stops after four distinct numbers and leaves unknowns unverified', async () => {

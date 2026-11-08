@@ -11,6 +11,43 @@ const { normalize, rankResults, searchableSources } = require('./search-rules');
 const coverageRules = import('./coverage.mjs');
 const { restore } = require('./native-upscale');
 const coverageCache = new Map();
+const trendingCache = new Map();
+
+async function trendingManga(page) {
+    if (!Number.isInteger(page) || page < 1 || page > 500)
+        throw new Error('Página inválida.');
+    const cached = trendingCache.get(page);
+    if (cached && cached.expires > Date.now()) return cached.result;
+    const result = (async () => {
+        const response = await fetch('https://graphql.anilist.co', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            signal: AbortSignal.timeout(12000),
+            body: JSON.stringify({ variables: { page }, query: `
+                query TrendingManga($page: Int!) {
+                    Page(page: $page, perPage: 30) {
+                        pageInfo { hasNextPage }
+                        media(type: MANGA, sort: TRENDING_DESC, isAdult: false) {
+                            id title { romaji english } description(asHtml: false)
+                            bannerImage coverImage { large } genres startDate { year }
+                        }
+                    }
+                }` })
+        });
+        if (!response.ok) throw new Error('AniList indisponível (HTTP ' + response.status + ').');
+        const { data } = await response.json();
+        if (!Array.isArray(data?.Page?.media)) throw new Error('O AniList não retornou recomendações.');
+        return { rows: data.Page.media, more: page < 500 && data.Page.pageInfo.hasNextPage };
+    })();
+    trendingCache.delete(page);
+    if (trendingCache.size >= 32) trendingCache.delete(trendingCache.keys().next().value);
+    trendingCache.set(page, { result, expires: Date.now() + 180000 });
+    try { return await result; }
+    catch (error) {
+        if (trendingCache.get(page)?.result === result) trendingCache.delete(page);
+        throw error;
+    }
+}
 
 const [token] = process.argv.slice(2);
 const port = 11680;
@@ -401,6 +438,7 @@ async function command(body) {
         case 'work': return workDetails(body.engine, body.id, String(body.title ?? '').slice(0, 500));
         case 'pages': return (await chapterImages(body.engine, body.id)).map(p => media(body.engine, p));
         case 'coverage': return coverage(body.engine, body.id);
+        case 'trending': return trendingManga(body.page);
         default: throw new Error('Operação inválida.');
     }
 }
@@ -443,7 +481,7 @@ const files = new Map([
     ]),
 ]);
 http.createServer(async (req, res) => {
-    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data: https://s4.anilist.co https://s.anilist.co; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');

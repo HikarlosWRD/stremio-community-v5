@@ -116,8 +116,8 @@ function sourceLabel(source) {
 function errorText(node, message) {
     node.textContent = message;
 }
-function workCard(item, back) {
-    const card = button('', () => chapters(item, back), 'card');
+function workCard(item, back, open = () => chapters(item, back)) {
+    const card = button('', open, 'card');
     const cover = el(item.cover ? 'img' : 'div', '', 'placeholder');
     if (item.cover) {
         cover.src = item.cover;
@@ -131,7 +131,8 @@ function workCard(item, back) {
 
 function coverageLabel(data) {
     if (!data) return 'Verificando capítulos…';
-    if (data.first == null) return 'Faixa de capítulos indisponível';
+    if (data.failed) return 'Não foi possível verificar os capítulos';
+    if (data.first == null) return data.count === 1 ? '1 capítulo' : data.count + ' capítulos';
     const range = data.first === data.last ? 'Cap. ' + data.first : 'Cap. ' + data.first + '–' + data.last;
     return range;
 }
@@ -146,7 +147,7 @@ function coverageQueue() {
             const { item, updated } = pending.shift();
             active++;
             api('coverage', { engine: item.source.engine, id: item.id }, controller.signal)
-                .catch(() => ({})).then(data => {
+                .catch(() => ({ failed: true })).then(data => {
                     if (!controller.signal.aborted) {
                         item.coverage = data;
                         updated();
@@ -156,7 +157,7 @@ function coverageQueue() {
     }
     return {
         add(item, updated) {
-            if (item.coverage) return;
+            if (item.coverage && !item.coverage.failed) return;
             pending.push({ item, updated });
             pending.sort((a, b) => b.item.relevance - a.item.relevance);
             drain();
@@ -191,13 +192,19 @@ async function streamSearch(query, scope, signal, onEvent) {
     if (!complete) throw new Error();
 }
 
-function catalog() {
+function catalog() { searchView(); }
+
+function searchView(preset) {
     const page = begin();
+    const reopen = preset ? () => searchView(preset) : catalog;
+    const compareResults = preset
+        ? (a, b) => Number(b.relevance === 3) - Number(a.relevance === 3) || compareAvailability(a, b)
+        : compareAvailability;
     const form = el('form');
     const input = field('search', 'Título do mangá, manhwa ou webtoon');
     input.required = true;
     input.maxLength = 150;
-    input.value = lastQuery;
+    input.value = preset?.query ?? lastQuery;
     const submit = el('button', 'Buscar', 'primary');
     submit.type = 'submit';
     const cancel = button('Parar busca', () => controller?.abort());
@@ -217,7 +224,8 @@ function catalog() {
         option.value = value;
         scope.append(option);
     }
-    scope.value = searchScope;
+    scope.value = preset ? 'installed' : searchScope;
+    scope.hidden = Boolean(preset);
     scope.onchange = () => {
         searchScope = scope.value;
         localStorage.setItem('manga-search-scope', searchScope);
@@ -227,14 +235,29 @@ function catalog() {
     const status = el('p', 'Os primeiros capítulos com imagem verificada aparecem primeiro.', 'muted');
     status.setAttribute('role', 'status');
     const groups = el('div');
-    view.append(el('h1', 'Mangás, manhwas e webtoons'), form, status, groups);
+    if (preset) {
+        view.append(recommendationHero(preset), el('h2', 'Escolha uma fonte'));
+        window.scrollTo(0, 0);
+        if (preset.alternate) {
+            const alternate = button('Buscar como ' + preset.alternate, () => {
+                [input.value, preset.alternate] = [preset.alternate, preset.query];
+                alternate.textContent = 'Buscar como ' + preset.alternate;
+                form.requestSubmit();
+            });
+            form.append(alternate);
+        }
+    } else view.append(el('h1', 'Mangás, manhwas e webtoons'));
+    view.append(form, status, groups);
     let controller;
     let inspections = coverageQueue();
     const views = new Map();
+    let result = preset ? preset.result : lastResults;
+    let searching = false;
     dispose = () => { controller?.abort(); inspections.stop(); };
 
     function reorderGroups() {
-        const ordered = [...views.values()].sort((a, b) => compareAvailability(a.first, b.first));
+        const ordered = [...views.values()].filter(group => group.first)
+            .sort((a, b) => compareResults(a.first, b.first));
         ordered.forEach(({ section }, index) => {
             if (groups.children[index] !== section) groups.insertBefore(section, groups.children[index] || null);
         });
@@ -244,12 +267,12 @@ function catalog() {
         const section = el('section', '', 'result-group');
         const heading = el('div', '', 'controls');
         heading.append(el('h2', sourceLabel(group.source)),
-            button('Buscar nesta fonte', () => sourceCatalog(group.source, lastQuery, catalog)));
+            button('Buscar nesta fonte', () => sourceCatalog(group.source, input.value.trim(), reopen)));
         const cards = el('div', '', 'grid');
         const view = { section, first: group.rows[0] };
         views.set(group, view);
         const items = group.rows.map(item => {
-            const card = workCard(item, catalog);
+            const card = workCard(item, reopen);
             const note = el('small', coverageLabel(item.coverage), 'chapter-coverage');
             card.append(note);
             return { item, card, note };
@@ -259,29 +282,34 @@ function catalog() {
             fill();
         });
         function fill() {
-            items.sort((a, b) => compareAvailability(a.item, b.item));
-            view.first = items[0].item;
-            const rows = group.expanded ? items : items.slice(0, 6);
+            items.sort((a, b) => compareResults(a.item, b.item));
+            const available = items.filter(({ item }) => item.coverage?.count !== 0);
+            view.first = available[0]?.item;
+            if (!view.first) section.remove();
+            const rows = group.expanded ? available : available.slice(0, 6);
             rows.forEach(({ card }, index) => {
                 if (cards.children[index] !== card) cards.insertBefore(card, cards.children[index] || null);
             });
             while (cards.children.length > rows.length) cards.lastElementChild.remove();
-            more.hidden = group.expanded || rows.length === group.rows.length;
+            more.textContent = 'Mostrar todos (' + available.length + ')';
+            more.hidden = group.expanded || rows.length === available.length;
             reorderGroups();
         }
         section.append(heading, cards, more);
         fill();
         for (const { item, note } of items) {
             inspections.add(item, () => {
-                note.textContent = coverageLabel(item.coverage);
+                if (item.coverage.count !== 0) note.textContent = coverageLabel(item.coverage);
                 fill();
+                if (result) updateStatus(result, searching);
             });
         }
     }
 
     function updateStatus(result, searching) {
-        const count = result.groups.reduce((total, group) => total + group.rows.length, 0);
-        const summary = count + ' título(s) em ' + result.groups.length + ' fonte(s).';
+        const counts = result.groups.map(group => group.rows.filter(item => item.coverage?.count !== 0).length);
+        const count = counts.reduce((total, size) => total + size, 0);
+        const summary = count + ' título(s) em ' + counts.filter(Boolean).length + ' fonte(s).';
         if (searching) {
             status.textContent = result.total === null ? 'Preparando a busca…' :
                 summary + ' Consultadas ' + result.completed + ' de ' + result.total + ' fontes.';
@@ -295,9 +323,9 @@ function catalog() {
         }
     }
 
-    if (lastResults) {
-        lastResults.groups.forEach(renderGroup);
-        updateStatus(lastResults, false);
+    if (result) {
+        result.groups.forEach(renderGroup);
+        updateStatus(result, false);
     }
     form.onsubmit = async event => {
         event.preventDefault();
@@ -310,9 +338,13 @@ function catalog() {
         const current = new AbortController();
         controller = current;
         cancel.hidden = false;
-        lastQuery = query;
-        const result = { groups: [], total: null, completed: 0, failed: 0, unavailable: 0 };
-        lastResults = result;
+        if (preset) preset.query = query;
+        else lastQuery = query;
+        const currentResult = { groups: [], total: null, completed: 0, failed: 0, unavailable: 0 };
+        result = currentResult;
+        searching = true;
+        if (preset) preset.result = result;
+        else lastResults = result;
         groups.replaceChildren();
         updateStatus(result, true);
         try {
@@ -331,7 +363,7 @@ function catalog() {
                 }
                 updateStatus(result, true);
             });
-            if (controller === current && page === screen) updateStatus(result, false);
+            if (controller === current && page === screen) updateStatus(currentResult, false);
         } catch {
             if (controller === current && page === screen) {
                 status.textContent = current.signal.aborted
@@ -339,9 +371,114 @@ function catalog() {
                     : 'A busca foi interrompida. Tente novamente.';
             }
         } finally {
-            if (controller === current) cancel.hidden = true;
+            if (controller === current) {
+                searching = false;
+                cancel.hidden = true;
+            }
         }
     };
+    if (preset && (!result || result.completed < result.total || result.total === null)) form.requestSubmit();
+}
+
+function artImage(url, className) {
+    const art = el('img', '', className);
+    art.src = url;
+    art.alt = '';
+    art.setAttribute('aria-hidden', 'true');
+    art.onerror = () => art.remove();
+    return art;
+}
+
+function recommendationHero({ work, back }) {
+    const hero = el('section', '', 'recommendation-hero');
+    const banner = work.bannerImage || work.coverImage?.large;
+    if (banner) hero.append(artImage(banner, 'recommendation-banner'));
+    const close = button('×', back, 'recommendation-close');
+    close.setAttribute('aria-label', 'Voltar aos recomendados');
+    hero.append(close);
+    const content = el('div', '', 'recommendation-info');
+    if (work.coverImage?.large) content.append(artImage(work.coverImage.large, 'work-cover'));
+    const details = el('div');
+    const meta = [work.startDate?.year, ...(work.genres || []).slice(0, 5)].filter(Boolean).join(' · ');
+    details.append(el('small', 'EM ALTA NO ANILIST'), el('h1', work.title.english || work.title.romaji),
+        el('p', meta, 'muted'));
+    if (work.description) {
+        const description = work.description.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '').trim();
+        const synopsis = el('details', '', 'work-description');
+        synopsis.append(el('summary', 'Sinopse do AniList'), el('p', description));
+        synopsis.open = true;
+        details.append(synopsis);
+    }
+    content.append(details);
+    hero.append(content);
+    return hero;
+}
+
+function recommendations(state = { rows: [], next: 1, scroll: 0 }) {
+    const page = begin();
+    const controller = new AbortController();
+    const heading = el('div', '', 'library-heading');
+    heading.append(el('small', 'ANILIST · TRENDING MANGA'), el('h1', 'Recomendados'),
+        el('p', 'Descubra o que está em alta e encontre uma fonte para ler.', 'muted'));
+    const cards = el('div', '', 'grid recommendations-grid');
+    const status = el('p', '', 'muted');
+    status.setAttribute('role', 'status');
+    const more = button('Carregar mais', load, 'load-recommendations');
+    view.append(heading, cards, status, more);
+    const seen = new Set(state.rows.map(work => work.id));
+    let loading = false;
+    let failed = false;
+    const observer = new IntersectionObserver(changes => {
+        if (!failed && changes.some(change => change.isIntersecting)) load();
+    }, { rootMargin: '500px' });
+    dispose = () => { controller.abort(); observer.disconnect(); };
+    function add(work) {
+        const title = work.title.english || work.title.romaji;
+        if (!title) return;
+        const back = () => recommendations(state);
+        const card = workCard({ title, cover: work.coverImage?.large }, back, () => {
+            state.scroll = window.scrollY;
+            const alternate = work.title.romaji && work.title.romaji !== title ? work.title.romaji.slice(0, 150) : '';
+            searchView({ work, back, query: title.slice(0, 150), alternate });
+        });
+        cards.append(card);
+    }
+    state.rows.forEach(add);
+    more.hidden = state.next === null;
+    window.scrollTo(0, state.scroll);
+    if (!more.hidden) observer.observe(more);
+
+    async function load() {
+        if (loading || state.next === null || page !== screen) return;
+        loading = true;
+        failed = false;
+        more.disabled = true;
+        status.textContent = 'Carregando obras do AniList…';
+        observer.unobserve(more);
+        try {
+            const data = await api('trending', { page: state.next }, controller.signal);
+            if (page !== screen) return;
+            for (const work of data.rows) {
+                if (seen.has(work.id)) continue;
+                seen.add(work.id);
+                state.rows.push(work);
+                add(work);
+            }
+            state.next = data.more ? state.next + 1 : null;
+            more.hidden = state.next === null;
+            status.textContent = state.rows.length ? '' : 'Nenhuma recomendação disponível.';
+        } catch {
+            if (page !== screen) return;
+            failed = true;
+            status.textContent = 'O AniList está indisponível agora.';
+        } finally {
+            if (page === screen) {
+                loading = more.disabled = false;
+                more.textContent = failed ? 'Tentar novamente' : 'Carregar mais';
+                if (!failed && !more.hidden) observer.observe(more);
+            }
+        }
+    }
 }
 
 function sourceCatalog(source, initialQuery = '', back = settings) {
@@ -389,16 +526,20 @@ function sourceCatalog(source, initialQuery = '', back = settings) {
                     card.append(note);
                     inspected.push({ item, card });
                     inspections.add(item, () => {
-                        note.textContent = coverageLabel(item.coverage);
+                        if (item.coverage.count === 0) card.remove();
+                        else note.textContent = coverageLabel(item.coverage);
                         inspected.sort((a, b) => compareAvailability(a.item, b.item));
-                        inspected.forEach(({ card: tile }, index) => {
+                        const available = inspected.filter(({ item }) => item.coverage?.count !== 0);
+                        available.forEach(({ card: tile }, index) => {
                             if (cards.children[index] !== tile) cards.insertBefore(tile, cards.children[index] || null);
                         });
+                        status.textContent = available.length ? available.length + ' título(s).' :
+                            'Nenhum título com capítulos nesta página.';
                     });
                 }
             }
             position = data.rows.length && !added ? null : data.next;
-            status.textContent = seen.size ? seen.size + ' título(s).' :
+            status.textContent = cards.children.length ? cards.children.length + ' título(s).' :
                 (position === null ? 'Nenhum título encontrado.' : 'Nenhuma correspondência nesta página.');
         } catch {
             status.textContent = 'O catálogo desta fonte está indisponível. Tente novamente.';
@@ -1179,5 +1320,13 @@ document.querySelector('#home').onclick = () => window.chrome?.webview?.postMess
 document.querySelector('#catalog').onclick = catalog;
 document.querySelector('#manga-home').onclick = () => library(true);
 document.querySelector('#library').onclick = () => library(false);
+document.querySelector('#recommendations').onclick = () => recommendations();
 document.querySelector('#sources').onclick = settings;
 library(true);
+api('trending', { page: 1 }).then(({ rows }) => {
+    const art = document.querySelector('#ambient-art');
+    const banners = rows.filter(work => work.bannerImage).slice(0, 3);
+    const images = banners.length ? banners.map(work => work.bannerImage) :
+        rows.map(work => work.coverImage?.large).filter(Boolean).slice(0, 3);
+    art.append(...images.map(url => artImage(url)));
+}).catch(() => {});
