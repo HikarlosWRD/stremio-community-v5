@@ -7,7 +7,7 @@ const test = require('node:test');
 const base = join(__dirname, 'reader');
 test('native queue limits GPU work to two and removes canceled waiting jobs', async () => {
     const source = readFileSync(join(base, 'native-upscale.js'), 'utf8');
-    const code = source.slice(source.indexOf('const parallelJobs'), source.indexOf('function validateImage'));
+    const code = source.slice(source.indexOf('let parallelJobs'), source.indexOf('function validateImage'));
     let running = 0, peak = 0;
     const started = [], finish = new Map();
     const context = { Promise, processImage: (input, _model, signal) => new Promise((resolve, reject) => {
@@ -18,7 +18,7 @@ test('native queue limits GPU work to two and removes canceled waiting jobs', as
         signal.addEventListener('abort', aborted, { once: true });
         finish.set(input.id, done);
     }) };
-    vm.runInNewContext(code + '\nthis.schedule = scheduleNative;', context);
+    vm.runInNewContext(code + '\nthis.schedule = scheduleNative; this.configure = configureNativeConcurrency;', context);
     const controllers = Array.from({ length: 4 }, () => new AbortController());
     const jobs = controllers.map((controller, i) =>
         context.schedule({ id: i }, 'realcugan', controller.signal)
@@ -71,4 +71,40 @@ test('reader preempts old or prefetched upscale when focus changes', () => {
     job.abort();
     assert.equal(context.shouldPreempt(job, focused, [focused, prefetched],
         'realcugan', 0), false);
+});
+test('server raises and lowers live Vulkan concurrency without losing queued jobs', async () => {
+    const source = readFileSync(join(base, 'native-upscale.js'), 'utf8');
+    const code = source.slice(source.indexOf('let parallelJobs'), source.indexOf('function validateImage'));
+    let active = 0, peak = 0;
+    const started = [], complete = new Map();
+    const context = { Promise, processImage: input => new Promise(resolve => {
+        active++;
+        peak = Math.max(peak, active);
+        started.push(input.id);
+        complete.set(input.id, () => { active--; resolve(input.id); });
+    }) };
+    vm.runInNewContext(code +
+        '\nthis.schedule = scheduleNative; this.configure = configureNativeConcurrency;', context);
+    const controllers = Array.from({ length: 5 }, () => new AbortController());
+    const jobs = controllers.map((ctl, i) => context.schedule({ id: i }, 'realcugan', ctl.signal));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(started, [0, 1]);
+    context.configure(4);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(started, [0, 1, 2, 3]);
+    assert.equal(peak, 4);
+    context.configure(1);
+    complete.get(0)();
+    complete.get(1)();
+    complete.get(2)();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(started, [0, 1, 2, 3]);
+    complete.get(3)();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(started, [0, 1, 2, 3, 4]);
+    complete.get(4)();
+    assert.deepEqual(await Promise.all(jobs), [0, 1, 2, 3, 4]);
+    assert.equal(active, 0);
+    assert.throws(() => context.configure(0));
+    assert.throws(() => context.configure(9));
 });

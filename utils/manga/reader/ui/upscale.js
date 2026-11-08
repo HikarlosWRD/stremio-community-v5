@@ -205,6 +205,25 @@ export function upscaleImage(image, model, repetitions, refineColor, stillNeeded
     return job;
 }
 
+export function createNativeTileConcurrency(initial = 2) {
+    let limit = Number.isInteger(initial) && initial >= 1 && initial <= 8 ? initial : 2;
+    const listeners = new Set();
+    return {
+        get limit() { return limit; },
+        setLimit(value) {
+            if (!Number.isInteger(value) || value < 1 || value > 8)
+                throw new Error('Quantidade inválida de blocos simultâneos.');
+            if (value === limit) return;
+            limit = value;
+            for (const listener of listeners) listener();
+        },
+        subscribe(listener) {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+        }
+    };
+}
+
 function nativeTilePlan(width, height, side, overlap = 24) {
     const rows = [];
     for (let y = 0; y < height; y += side) {
@@ -282,7 +301,8 @@ async function nativeProcessRegion(image, region, model, scale, signal) {
     }
 }
 
-export async function upscaleNative(image, model, scale, signal, onProgress = () => {}) {
+export async function upscaleNative(image, model, scale, signal, onProgress = () => {},
+    concurrency = createNativeTileConcurrency(2)) {
     const { naturalWidth: width, naturalHeight: height } = image;
     if (!width || !height) throw new Error('A página ainda não foi carregada.');
     signal.throwIfAborted();
@@ -299,7 +319,7 @@ export async function upscaleNative(image, model, scale, signal, onProgress = ()
         }
     }
     let lastError;
-    let parallel = 2;
+    let retryLimit = 8;
     for (const side of (scale >= 4 ? [640, 384, 256] : [1024, 640, 384])) {
         const plan = nativeTilePlan(width, height, side);
         const total = plan.reduce((sum, row) => sum + row.length, 0);
@@ -308,39 +328,62 @@ export async function upscaleNative(image, model, scale, signal, onProgress = ()
             ({ region, rowIndex, columnIndex })));
         let next = 0;
         let done = 0;
+        let active = 0;
         let firstFailure;
         const attempt = new AbortController();
         const cancelAttempt = () => attempt.abort(signal.reason);
         signal.addEventListener('abort', cancelAttempt, { once: true });
         try {
-            async function worker() {
-                while (next < tasks.length && !firstFailure) {
-                    signal.throwIfAborted();
-                    const task = tasks[next++];
-                    try {
-                        const piece = await nativeProcessRegion(image, task.region, model, scale, attempt.signal);
-                        signal.throwIfAborted();
-                        rows[task.rowIndex][task.columnIndex] = piece;
-                        onProgress(++done, total);
-                    } catch (error) {
-                        if (!firstFailure) {
-                            firstFailure = error;
-                            attempt.abort(error);
-                        }
-                        throw error;
+            await new Promise((resolve, reject) => {
+                let finished = false;
+                let unsubscribe = () => {};
+                const finish = error => {
+                    if (finished) return;
+                    finished = true;
+                    unsubscribe();
+                    if (error) reject(error);
+                    else resolve();
+                };
+                const dispatch = () => {
+                    if (finished) return;
+                    if (signal.aborted && !firstFailure) {
+                        firstFailure = signal.reason;
+                        attempt.abort(firstFailure);
                     }
-                }
-            }
-            const workers = await Promise.allSettled(
-                Array.from({ length: Math.min(parallel, total) }, () => worker()));
-            const failure = workers.find(result => result.status === 'rejected');
-            if (failure) throw failure.reason;
+                    while (!firstFailure && active < Math.min(retryLimit, concurrency.limit) &&
+                        next < tasks.length) {
+                        const task = tasks[next++];
+                        active++;
+                        Promise.resolve().then(() =>
+                            nativeProcessRegion(image, task.region, model, scale, attempt.signal))
+                            .then(piece => {
+                                if (attempt.signal.aborted) return;
+                                rows[task.rowIndex][task.columnIndex] = piece;
+                                onProgress(++done, total);
+                            })
+                            .catch(error => {
+                                if (!firstFailure) {
+                                    firstFailure = error;
+                                    attempt.abort(error);
+                                }
+                            })
+                            .finally(() => {
+                                active--;
+                                if (firstFailure && active === 0) finish(firstFailure);
+                                else if (done === total && active === 0) finish();
+                                else dispatch();
+                            });
+                    }
+                };
+                unsubscribe = concurrency.subscribe(dispatch);
+                dispatch();
+            });
             return { rows, width: width * scale, height: height * scale, scale, tiled: true };
         } catch (error) {
             if (signal.aborted || !/limite|resolu|mem[oó]ria|processar|processamento|tempo|sa[ií]da|entrada/i.test(error.message))
                 throw error;
             lastError = error;
-            parallel = 1;
+            retryLimit = 1;
         } finally {
             signal.removeEventListener('abort', cancelAttempt);
         }

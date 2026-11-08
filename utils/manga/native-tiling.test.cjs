@@ -5,7 +5,8 @@ const { join } = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 const source = readFileSync(join(__dirname, 'reader/ui/upscale.js'), 'utf8');
-const code = source.slice(source.indexOf('function nativeTilePlan'))
+const code = source.slice(source.indexOf('export function createNativeTileConcurrency'))
+    .replace('export function createNativeTileConcurrency', 'function createNativeTileConcurrency')
     .replace('export async function upscaleNative', 'async function upscaleNative');
 const sandbox = {
     document: { createElement: () => {
@@ -22,7 +23,7 @@ const sandbox = {
     }),
     Error, Math, Promise, Number, AbortController
 };
-vm.runInNewContext(code + '\nthis.tiles = { nativeTilePlan, nativeWholeFits, upscaleNative };', sandbox);
+vm.runInNewContext(code + '\nthis.tiles = { nativeTilePlan, nativeWholeFits, upscaleNative, createNativeTileConcurrency };', sandbox);
 test('tile plans cover long pages completely and never exceed native limits', () => {
     for (const [width, height, scale, side] of [[1400, 6500, 2, 1024], [12000, 1100, 4, 640], [720, 30000, 2, 1024]]) {
         const rows = sandbox.tiles.nativeTilePlan(width, height, side);
@@ -123,5 +124,49 @@ test('jumping away aborts the two active tiles and never starts old tiles', asyn
         controller.abort(new Error('page changed'));
         await assert.rejects(pending, /page changed/);
         assert.equal(launched, 2);
+    } finally { sandbox.fetch = originalFetch; }
+});
+test('concurrency control validates bounds and notifies listeners', () => {
+    const control = sandbox.tiles.createNativeTileConcurrency(2);
+    let changes = 0;
+    const stop = control.subscribe(() => changes++);
+    assert.equal(control.limit, 2);
+    control.setLimit(4);
+    assert.equal(control.limit, 4);
+    assert.equal(changes, 1);
+    control.setLimit(4);
+    assert.equal(changes, 1);
+    stop();
+    control.setLimit(1);
+    assert.equal(changes, 1);
+    assert.throws(() => control.setLimit(0));
+    assert.throws(() => control.setLimit(9));
+    assert.throws(() => control.setLimit(3.5));
+});
+test('changing tile count during a page takes effect without restarting tiles', async () => {
+    const originalFetch = sandbox.fetch;
+    const pool = sandbox.tiles.createNativeTileConcurrency(1);
+    let active = 0, peak = 0, started = 0;
+    sandbox.fetch = async (url, options) => {
+        started++;
+        peak = Math.max(peak, ++active);
+        await new Promise(resolve => setTimeout(resolve, 30));
+        active--;
+        return originalFetch(url, options);
+    };
+    try {
+        const pending = sandbox.tiles.upscaleNative(
+            { naturalWidth: 1400, naturalHeight: 6500 }, 'realcugan', 2,
+            new AbortController().signal, () => {}, pool);
+        await new Promise(resolve => setTimeout(resolve, 6));
+        assert.equal(active, 1);
+        pool.setLimit(4);
+        await new Promise(resolve => setTimeout(resolve, 6));
+        assert.equal(active, 4);
+        pool.setLimit(2);
+        const result = await pending;
+        assert.ok(result.tiled);
+        assert.equal(peak, 4);
+        assert.ok(started > 4);
     } finally { sandbox.fetch = originalFetch; }
 });

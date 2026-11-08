@@ -9,7 +9,7 @@ const { createInterface } = require('node:readline');
 const { setMaxListeners } = require('node:events');
 const { normalize, rankResults, searchableSources } = require('./search-rules');
 const coverageRules = import('./coverage.mjs');
-const { restore } = require('./native-upscale');
+const { restore, configureNativeConcurrency } = require('./native-upscale');
 const coverageCache = new Map();
 const trendingCache = new Map();
 
@@ -454,6 +454,7 @@ async function command(body) {
         case 'pages': return (await chapterImages(body.engine, body.id)).map(p => media(body.engine, p));
         case 'coverage': return coverage(body.engine, body.id);
         case 'trending': return trendingManga(body.page);
+        case 'nativeConcurrency': return configureNativeConcurrency(body.parallel);
         case 'randomTrending': return randomTrendingManga(body.previousId);
         default: throw new Error('Operação inválida.');
     }

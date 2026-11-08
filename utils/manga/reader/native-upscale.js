@@ -12,7 +12,8 @@ const models = Object.freeze({
 const maxInputBytes = 25 * 1024 * 1024;
 const maxPixels = 24000000;
 const pngSignature = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
-const parallelJobs = 2;
+let parallelJobs = 2;
+const maximumParallelJobs = 8;
 const pendingJobs = [];
 let runningJobs = 0;
 let queued = 0;
@@ -33,6 +34,14 @@ function dispatchJobs() {
                 dispatchJobs();
             });
     }
+}
+
+function configureNativeConcurrency(value) {
+    if (!Number.isInteger(value) || value < 1 || value > maximumParallelJobs)
+        throw new Error('Quantidade de blocos simultâneos inválida.');
+    parallelJobs = value;
+    dispatchJobs();
+    return { parallelJobs };
 }
 
 function scheduleNative(png, modelName, signal) {
@@ -128,7 +137,7 @@ async function processImage(png, modelName, signal) {
 
 async function restore(req, modelName, signal) {
     if (!Object.hasOwn(models, modelName)) throw new Error('Modelo inválido.');
-    if (queued >= 4) throw new Error('A fila de upscale está ocupada.');
+    if (queued >= maximumParallelJobs * 2) throw new Error('A fila de upscale está ocupada.');
     queued++;
     try {
         const png = await readInput(req);
@@ -138,4 +147,4 @@ async function restore(req, modelName, signal) {
     }
 }
 
-module.exports = { models, restore, validateImage };
+module.exports = { models, restore, validateImage, configureNativeConcurrency };

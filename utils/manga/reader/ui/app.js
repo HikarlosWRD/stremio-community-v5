@@ -1,4 +1,4 @@
-import { upscaleImage, upscaleNative } from './upscale.js';
+import { upscaleImage, upscaleNative, createNativeTileConcurrency } from './upscale.js';
 import { findChapters } from './chapter-list.mjs';
 import { compareAvailability } from './coverage.mjs';
 
@@ -1322,6 +1322,12 @@ const models = {
     L: 'Anime4K Pesado (L)'
 };
 const nativeScales = { realcugan: 2, realesrgan: 4 };
+let nativeServerConfiguration = Promise.resolve();
+function configureNativeConcurrency(parallel) {
+    nativeServerConfiguration = nativeServerConfiguration.catch(() => {})
+        .then(() => api('nativeConcurrency', { parallel }));
+    return nativeServerConfiguration;
+}
 const storedModel = localStorage.getItem('manga-upscale-model');
 let upscaleModel = Object.hasOwn(models, storedModel) ? storedModel :
     (storedModel === 'off' || localStorage.getItem('manga-upscale') !== 'yes' ? 'off' : 'S');
@@ -1382,6 +1388,37 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     zoomButtons.append(smaller, zoomValue, larger);
     const model = readerSelect('Modelo de upscale', [['off', 'Desligado'], ...Object.entries(models)],
         upscaleModel, value => { upscaleModel = value; updateUpscale(); });
+    const tileConcurrency = createNativeTileConcurrency(
+        Number(localStorage.getItem('manga-upscale-parallel-tiles')) || 2);
+    let nativeSync = Promise.resolve();
+    let desiredTiles = tileConcurrency.limit;
+    function syncNativeConcurrency(value) {
+        nativeSync = configureNativeConcurrency(value);
+        return nativeSync;
+    }
+    const concurrentTiles = readerSelect('Blocos simultâneos',
+        Array.from({ length: 8 }, (_, i) => [String(i + 1),
+            i === 1 ? '2 · Padrão' : String(i + 1)]),
+        String(tileConcurrency.limit), value => {
+            const next = Number(value);
+            desiredTiles = next;
+            if (next < tileConcurrency.limit) tileConcurrency.setLimit(next);
+            const select = concurrentTiles.querySelector('select');
+            select.title = 'Aplicando quantidade de blocos…';
+            void syncNativeConcurrency(next).then(() => {
+                if (desiredTiles !== next || page !== screen) return;
+                tileConcurrency.setLimit(next);
+                localStorage.setItem('manga-upscale-parallel-tiles', String(next));
+                select.title = 'Mais blocos usam mais memória da GPU.';
+            }).catch(error => {
+                if (desiredTiles !== next || page !== screen) return;
+                desiredTiles = tileConcurrency.limit;
+                select.value = String(tileConcurrency.limit);
+                select.title = error.message;
+            });
+        });
+    concurrentTiles.title = 'Mais blocos usam mais memória e podem reduzir o desempenho.';
+    if (nativeScales[upscaleModel]) void syncNativeConcurrency(desiredTiles).catch(() => {});
     const passes = readerSelect('Passagens', [['1', '1 · 2×'], ['2', '2 · 4×']],
         String(repetitions), value => { repetitions = Number(value); updateUpscale(); });
     const color = el('input');
@@ -1392,7 +1429,7 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     colorLabel.append(color, document.createTextNode('Refinar cores'));
     const upscaleStatus = el('small', '', 'reader-upscale-status');
     upscaleStatus.setAttribute('role', 'status');
-    adjustments.append(el('strong', 'Zoom'), zoomButtons, model, passes, colorLabel, upscaleStatus);
+    adjustments.append(el('strong', 'Zoom'), zoomButtons, model, concurrentTiles, passes, colorLabel, upscaleStatus);
     layout.append(navigation, content, adjustments);
     view.append(layout);
     window.scrollTo(0, 0);
@@ -1517,12 +1554,14 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     function updateControls() {
         const anime4k = upscaleModel !== 'off' && !nativeScales[upscaleModel];
         passes.hidden = colorLabel.hidden = !anime4k;
+        concurrentTiles.hidden = !nativeScales[upscaleModel];
     }
     function updateUpscale() {
         localStorage.setItem('manga-upscale-model', upscaleModel);
         localStorage.setItem('manga-upscale-repetitions', String(repetitions));
         localStorage.setItem('manga-upscale-color', refineColor ? 'yes' : 'no');
         updateControls();
+        if (nativeScales[upscaleModel]) void syncNativeConcurrency(desiredTiles).catch(() => {});
         generation++;
         activeJob?.abort();
         upscaleStatus.textContent = '';
@@ -1587,7 +1626,9 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
                     if (stillNeeded()) upscaleStatus.textContent = 'Upscale da página ' +
                         (figure.pageNumber + 1) + ' · bloco ' + done + '/' + total;
                 };
-                const result = scale ? await upscaleNative(figure.image, modelName, scale, job.signal, progress) :
+                if (scale) await nativeSync;
+                if (!stillNeeded()) return;
+                const result = scale ? await upscaleNative(figure.image, modelName, scale, job.signal, progress, tileConcurrency) :
                     await upscaleImage(figure.image, modelName, repetitions, refineColor, stillNeeded);
                 if (!result || !stillNeeded()) return;
                 output = { figure, bytes: result.blob?.size || 0,
