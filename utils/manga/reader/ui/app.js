@@ -3,6 +3,11 @@ import { findChapters } from './chapter-list.mjs';
 import { compareAvailability } from './coverage.mjs';
 
 const view = document.querySelector('#view');
+const ambient = document.querySelector('#ambient-art');
+let trendingArt = [];
+let selectedArt;
+let themeTab = 'manga-home';
+const themeOrder = ['manga-home', 'library', 'recommendations', 'catalog', 'sources'];
 const labels = { kotatsu: 'Kotatsu', mihon: 'Mihon' };
 let screen = 0;
 let lastQuery = '';
@@ -24,6 +29,7 @@ function updateWork(item, update) {
     const existing = data.works[key] || { item, inLibrary: false, read: {} };
     if (existing.lastChapter) existing.lastReadAt ??= existing.updatedAt;
     existing.item = { id: item.id, title: item.title, source: item.source };
+    if (item.artwork) existing.item.artwork = item.artwork;
     update(existing);
     data.works[key] = existing;
     saveLibrary(data);
@@ -34,28 +40,37 @@ function savedCover(item) {
 }
 
 function library(home = false) {
-    begin();
-    window.scrollTo(0, 0);
-    const heading = el('div', '', 'library-heading');
-    heading.append(el('small', 'MANGÁS'), el('h1', home ? 'Continue sua leitura' : 'Sua biblioteca'));
-    view.append(heading);
     const works = Object.values(readLibrary().works)
         .filter(work => work.inLibrary && (!home || work.lastChapter?.id != null));
     const activity = work => (home ? work.lastReadAt ?? work.updatedAt : work.updatedAt) || 0;
     works.sort((a, b) => activity(b) - activity(a));
+    const featured = works[0];
+    const cover = featured && savedCover(featured.item);
+    const artwork = featured?.item.artwork || cover;
+    begin(artwork, home ? 'manga-home' : 'library');
+    window.scrollTo(0, 0);
+    const heading = introHero(home ? 'CONTINUE SUA LEITURA' : 'SUA BIBLIOTECA',
+        featured?.item.title || (home ? 'Continue sua leitura' : 'Sua biblioteca'), '', artwork, cover);
+    view.append(heading.panel);
     if (!works.length) {
-        view.append(el('p', home ? 'Comece a ler uma obra da biblioteca para vê-la aqui.' :
+        heading.details.append(el('p', home ? 'Comece a ler uma obra da biblioteca para vê-la aqui.' :
             'Adicione uma obra à biblioteca para encontrá-la aqui.', 'muted'));
-        view.append(button('Explorar obras', catalog, 'primary'));
+        heading.details.append(button('Explorar obras', catalog, 'primary'));
         return;
     }
     const grid = el('div', '', 'grid');
-    for (const work of works) {
+    for (const [position, work] of works.entries()) {
         const item = { ...work.item, cover: savedCover(work.item) };
         const back = () => library(home);
-        const tile = el('article', '', 'library-tile');
-        const card = workCard(item, back);
-        tile.append(card);
+        const tile = position ? el('article', '', 'library-tile') : el('div', '', 'controls');
+        if (position) tile.append(workCard(item, back));
+        else {
+            const progress = work.lastChapter;
+            heading.details.append(el('p', home
+                ? (progress.name || 'Capítulo em andamento') + ' · Página ' + ((progress.page ?? 0) + 1)
+                : works.length + (works.length === 1 ? ' obra salva' : ' obras salvas'), 'muted'), tile);
+            tile.append(button('Ver capítulos', () => chapters(item, back)));
+        }
         if (home) {
             const progress = work.lastChapter;
             tile.append(button('▶ Continuar', () => chapters(item, back, undefined, '', progress.id, progress.page), 'primary'));
@@ -70,9 +85,9 @@ function library(home = false) {
                 tile.append(shortcut);
             }
         }
-        grid.append(tile);
+        if (position) grid.append(tile);
     }
-    view.append(grid);
+    if (grid.children.length) view.append(el('h2', home ? 'Outras leituras' : 'Outras obras salvas'), grid);
 }
 
 function el(tag, text, className) {
@@ -94,10 +109,18 @@ function field(type, placeholder) {
     node.setAttribute('aria-label', placeholder);
     return node;
 }
-function begin() {
+function begin(artwork, tab = themeTab) {
     dispose();
     dispose = () => {};
     view.replaceChildren();
+    selectedArt = artwork;
+    themeTab = tab;
+    for (const id of themeOrder) {
+        const nav = document.getElementById(id);
+        if (id === tab) nav.setAttribute('aria-current', 'page');
+        else nav.removeAttribute('aria-current');
+    }
+    refreshAmbient();
     return ++screen;
 }
 async function api(op, values = {}, signal) {
@@ -195,7 +218,8 @@ async function streamSearch(query, scope, signal, onEvent) {
 function catalog() { searchView(); }
 
 function searchView(preset) {
-    const page = begin();
+    const artwork = preset && (preset.work.bannerImage || preset.work.coverImage?.large);
+    const page = begin(artwork, preset ? 'recommendations' : 'catalog');
     const reopen = preset ? () => searchView(preset) : catalog;
     const compareResults = preset
         ? (a, b) => Number(b.relevance === 3) - Number(a.relevance === 3) || compareAvailability(a, b)
@@ -246,8 +270,14 @@ function searchView(preset) {
             });
             form.append(alternate);
         }
-    } else view.append(el('h1', 'Mangás, manhwas e webtoons'));
-    view.append(form, status, groups);
+        view.append(form);
+    } else {
+        const heading = introHero('BUSCAR', 'Mangás, manhwas e webtoons',
+            'Encontre uma obra nas suas fontes e escolha a edição para ler.');
+        heading.details.append(form);
+        view.append(heading.panel);
+    }
+    view.append(status, groups);
     let controller;
     let inspections = coverageQueue();
     const views = new Map();
@@ -272,7 +302,8 @@ function searchView(preset) {
         const view = { section, first: group.rows[0] };
         views.set(group, view);
         const items = group.rows.map(item => {
-            const card = workCard(item, reopen);
+            const edition = artwork && item.relevance === 3 ? { ...item, artwork } : item;
+            const card = workCard(edition, reopen);
             const note = el('small', coverageLabel(item.coverage), 'chapter-coverage');
             card.append(note);
             return { item, card, note };
@@ -389,6 +420,47 @@ function artImage(url, className) {
     return art;
 }
 
+function tabArtwork() { return trendingArt[themeOrder.indexOf(themeTab) % trendingArt.length]; }
+
+function refreshAmbient() {
+    const url = selectedArt || tabArtwork();
+    if (ambient.dataset.artwork === (url || '')) return;
+    ambient.dataset.artwork = url || '';
+    ambient.replaceChildren();
+    if (!url) return;
+    const image = artImage(url, 'ambient-image');
+    image.onerror = () => {
+        if (!image.isConnected) return;
+        image.remove();
+        if (selectedArt && tabArtwork() && tabArtwork() !== url)
+            ambient.append(artImage(tabArtwork(), 'ambient-image'));
+    };
+    ambient.append(image);
+}
+
+function introHero(kicker, title, copy, artwork, cover) {
+    const panel = el('section', '', 'recommendation-hero screen-hero');
+    if (artwork) panel.append(artImage(artwork, 'recommendation-banner'));
+    else {
+        panel.dataset.themeArt = themeTab;
+        addThemeBanner(panel);
+    }
+    const content = el('div', '', 'recommendation-info');
+    if (cover) content.append(artImage(cover, 'work-cover'));
+    const details = el('div');
+    details.append(el('small', kicker, 'hero-kicker'), el('h1', title));
+    if (copy) details.append(el('p', copy, 'muted'));
+    content.append(details);
+    panel.append(content);
+    return { panel, details };
+}
+
+function addThemeBanner(panel) {
+    if (!trendingArt.length || panel.querySelector('.recommendation-banner')) return;
+    const artwork = trendingArt[themeOrder.indexOf(panel.dataset.themeArt) % trendingArt.length];
+    if (artwork) panel.prepend(artImage(artwork, 'recommendation-banner'));
+}
+
 function recommendationHero({ work, back }) {
     const hero = el('section', '', 'recommendation-hero');
     const banner = work.bannerImage || work.coverImage?.large;
@@ -415,16 +487,15 @@ function recommendationHero({ work, back }) {
 }
 
 function recommendations(state = { rows: [], next: 1, scroll: 0 }) {
-    const page = begin();
+    const page = begin(undefined, 'recommendations');
     const controller = new AbortController();
-    const heading = el('div', '', 'library-heading');
-    heading.append(el('small', 'ANILIST · TRENDING MANGA'), el('h1', 'Recomendados'),
-        el('p', 'Descubra o que está em alta e encontre uma fonte para ler.', 'muted'));
+    const heading = introHero('ANILIST · TRENDING MANGA', 'Recomendados',
+        'Descubra o que está em alta e encontre uma fonte para ler.');
     const cards = el('div', '', 'grid recommendations-grid');
     const status = el('p', '', 'muted');
     status.setAttribute('role', 'status');
     const more = button('Carregar mais', load, 'load-recommendations');
-    view.append(heading, cards, status, more);
+    view.append(heading.panel, cards, status, more);
     const seen = new Set(state.rows.map(work => work.id));
     let loading = false;
     let failed = false;
@@ -482,7 +553,7 @@ function recommendations(state = { rows: [], next: 1, scroll: 0 }) {
 }
 
 function sourceCatalog(source, initialQuery = '', back = settings) {
-    const page = begin();
+    const page = begin(undefined, 'sources');
     const form = el('form');
     const input = field('search', 'Buscar nesta fonte');
     input.value = initialQuery;
@@ -495,8 +566,9 @@ function sourceCatalog(source, initialQuery = '', back = settings) {
     const cards = el('div', '', 'grid');
     const more = button('Carregar mais', load);
     more.hidden = true;
-    view.append(button('← Voltar', back), el('h1', source.name),
-        el('p', sourceLabel(source), 'muted'), form, status, cards, more);
+    const heading = introHero('CATÁLOGO DA FONTE', source.name, sourceLabel(source));
+    heading.details.append(form);
+    view.append(button('← Voltar', back), heading.panel, status, cards, more);
 
     let query = initialQuery;
     let position = 0;
@@ -582,7 +654,7 @@ const sourceFilters = {
 let sourcesTab = 'install';
 
 async function settings() {
-    const page = begin();
+    const page = begin(undefined, 'sources');
     const tabs = el('div', '', 'controls');
     const filters = el('div', '', 'source-filters');
     const repoPanel = el('section', '', 'panel');
@@ -635,7 +707,9 @@ async function settings() {
     const installTab = button('Instalar fontes', () => switchTab('install'));
     const installedTab = button('Gerenciar instaladas', () => switchTab('installed'));
     tabs.append(installTab, installedTab);
-    view.append(el('h1', 'Fontes'), tabs, filters, actions, summary, status, repoPanel, list);
+    const heading = introHero('GERENCIAR CATÁLOGOS', 'Fontes',
+        'Instale e organize as fontes disponíveis para sua leitura.');
+    view.append(heading.panel, tabs, filters, actions, summary, status, repoPanel, list);
 
     let sources = [];
     let extensions = [];
@@ -859,7 +933,8 @@ async function settings() {
 }
 
 async function chapters(item, back = catalog, loaded, previousQuery = '', openId, openPage) {
-    const page = begin();
+    const artwork = item.artwork || item.cover || savedCover(item);
+    const page = begin(artwork);
     const status = el('p', 'Carregando capítulos…', 'muted');
     const filter = field('search', 'Filtrar capítulos por número ou título');
     filter.value = previousQuery;
@@ -881,7 +956,8 @@ async function chapters(item, back = catalog, loaded, previousQuery = '', openId
     filters.hidden = true;
     filters.append(filter, order);
     const list = el('div', '', 'list');
-    const hero = el('section', '', 'work-hero');
+    const hero = el('section', '', 'work-hero recommendation-hero');
+    hero.append(artImage(artwork, 'recommendation-banner work-banner'));
     const cover = el('img', '', 'work-cover');
     cover.src = item.cover || savedCover(item);
     cover.alt = 'Capa de ' + item.title;
@@ -999,7 +1075,7 @@ function readerSelect(label, choices, selected, onChange) {
 }
 
 async function reader(item, entries, index, returnToList, resumePage = 0) {
-    const page = begin();
+    const page = begin(item.artwork || item.cover || savedCover(item));
     const chapter = entries[index];
     const layout = el('section', '', 'reader');
     const navigation = el('nav', '', 'reader-rail');
@@ -1013,7 +1089,9 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     const content = el('div', '', 'reader-content');
     const status = el('p', 'Carregando páginas…', 'muted');
     const pages = el('div', '', 'pages');
-    content.append(el('h1', chapter.name), el('p', item.title + ' · ' + sourceLabel(item.source), 'muted'), status, pages);
+    const heading = el('div', '', 'reader-heading');
+    heading.append(el('h1', chapter.name), el('p', item.title + ' · ' + sourceLabel(item.source), 'muted'), status);
+    content.append(heading, pages);
     const adjustments = el('aside', '', 'reader-rail');
     adjustments.setAttribute('aria-label', 'Zoom e upscale');
     const smaller = button('−', () => setZoom(zoom - 25));
@@ -1324,9 +1402,8 @@ document.querySelector('#recommendations').onclick = () => recommendations();
 document.querySelector('#sources').onclick = settings;
 library(true);
 api('trending', { page: 1 }).then(({ rows }) => {
-    const art = document.querySelector('#ambient-art');
-    const banners = rows.filter(work => work.bannerImage).slice(0, 3);
-    const images = banners.length ? banners.map(work => work.bannerImage) :
-        rows.map(work => work.coverImage?.large).filter(Boolean).slice(0, 3);
-    art.append(...images.map(url => artImage(url)));
+    trendingArt = rows.map(work => work.bannerImage).filter(Boolean).slice(0, themeOrder.length);
+    if (!trendingArt.length) trendingArt = rows.map(work => work.coverImage?.large).filter(Boolean).slice(0, themeOrder.length);
+    refreshAmbient();
+    view.querySelectorAll('[data-theme-art]').forEach(addThemeBanner);
 }).catch(() => {});
