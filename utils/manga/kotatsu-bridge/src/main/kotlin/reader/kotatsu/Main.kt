@@ -130,7 +130,7 @@ private suspend fun handle(input: JSONObject): Any = when (input.getString("op")
         JSONArray(details.chapters.orEmpty().asReversed().map { chapter ->
             val id = item.source.name + "/" + chapter.id
             chapters.put(id, chapter)
-            JSONObject().put("id", id).put("name", chapter.name)
+            JSONObject().put("id", id).put("name", chapter.name).put("number", chapter.number)
         })
     }
     "pages" -> {

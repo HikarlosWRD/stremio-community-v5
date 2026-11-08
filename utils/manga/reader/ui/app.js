@@ -1,9 +1,11 @@
 import { upscaleImage } from './upscale.js';
+import { findChapters } from './chapter-list.mjs';
 
 const view = document.querySelector('#view');
 const labels = { kotatsu: 'Kotatsu', mihon: 'Mihon' };
 let screen = 0;
 let lastQuery = '';
+let searchScope = localStorage.getItem('manga-search-scope') === 'installed' ? 'installed' : 'active';
 let lastResults;
 let dispose = () => {};
 
@@ -61,11 +63,11 @@ function workCard(item, back) {
     return card;
 }
 
-async function streamSearch(query, signal, onEvent) {
+async function streamSearch(query, scope, signal, onEvent) {
     const response = await fetch('api', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-reader-request': '1' },
-        body: JSON.stringify({ op: 'search', query }), signal
+        body: JSON.stringify({ op: 'search', query, scope }), signal
     });
     if (!response.ok) throw new Error();
     const reader = response.body.getReader();
@@ -98,8 +100,21 @@ function catalog() {
     submit.type = 'submit';
     const cancel = button('Parar busca', () => controller?.abort());
     cancel.hidden = true;
-    form.append(input, submit, cancel);
-    const status = el('p', 'A busca consulta as fontes ativadas.', 'muted');
+    const scope = el('select');
+    scope.setAttribute('aria-label', 'Fontes consultadas na busca');
+    for (const [value, label] of [['active', 'Fontes ativadas'], ['installed', 'Todas as instaladas']]) {
+        const option = el('option', label);
+        option.value = value;
+        scope.append(option);
+    }
+    scope.value = searchScope;
+    scope.onchange = () => {
+        searchScope = scope.value;
+        localStorage.setItem('manga-search-scope', searchScope);
+        if (input.value.trim()) form.requestSubmit();
+    };
+    form.append(input, scope, submit, cancel);
+    const status = el('p', 'A busca ignora fontes identificadas como 18+.', 'muted');
     status.setAttribute('role', 'status');
     const groups = el('div');
     view.append(el('h1', 'Mangás, manhwas e webtoons'), form, status, groups);
@@ -138,7 +153,7 @@ function catalog() {
         } else if (result.unavailable) {
             status.textContent = (count ? summary + ' ' : '') + 'Parte das fontes está indisponível. Tente novamente.';
         } else if (!result.total) {
-            status.textContent = 'Ative pelo menos uma fonte em Fontes para buscar.';
+            status.textContent = 'Nenhuma fonte de mangás disponível neste escopo.';
         } else {
             status.textContent = (count ? summary : 'Nenhum título correspondente nas fontes consultadas.') +
                 (result.failed ? ' ' + result.failed + ' fonte(s) indisponível(is).' : '');
@@ -163,7 +178,7 @@ function catalog() {
         groups.replaceChildren();
         updateStatus(result, true);
         try {
-            await streamSearch(query, current.signal, event => {
+            await streamSearch(query, scope.value, current.signal, event => {
                 if (controller !== current || page !== screen) return;
                 if (event.type === 'start') {
                     result.total = event.total;
@@ -306,17 +321,19 @@ async function settings() {
         render();
     });
     const selectAll = button('Selecionar todas do filtro', () => {
-        for (const row of matching) pending.add(sourceKey(row));
+        for (const row of matching) selection().add(sourceKey(row));
         render();
     });
-    const clear = button('Limpar seleção', () => { pending.clear(); render(); });
+    const clear = button('Limpar seleção', () => { selection().clear(); render(); });
     const apply = button('Instalar selecionadas', () => {
         const rows = candidates('install').filter(row => pending.has(sourceKey(row)));
         installRows(rows);
     }, 'primary');
     const activate = button('Ativar todas do filtro', () => changeEnabled(matching, true), 'primary');
     const deactivate = button('Desativar todas do filtro', () => changeEnabled(matching, false));
-    actions.append(showAll, selectAll, clear, apply, activate, deactivate);
+    const remove = button('Desinstalar selecionadas', () =>
+        confirmRemoval(candidates('installed').filter(row => removal.has(sourceKey(row)))));
+    actions.append(showAll, selectAll, clear, apply, remove, activate, deactivate);
     const installTab = button('Instalar fontes', () => switchTab('install'));
     const installedTab = button('Gerenciar instaladas', () => switchTab('installed'));
     tabs.append(installTab, installedTab);
@@ -327,6 +344,8 @@ async function settings() {
     let matching = [];
     let busy = false;
     const pending = new Set();
+    const removal = new Set();
+    function selection() { return sourcesTab === 'installed' ? removal : pending; }
 
     function sourceKey(row) { return row.engine + ':' + row.id; }
     function candidates(tab) {
@@ -367,35 +386,44 @@ async function settings() {
             a.name.localeCompare(b.name, 'pt-BR'));
         const displayed = filter.showAll ? matching : matching.slice(0, 80);
         summary.textContent = displayed.length + ' de ' + matching.length + ' fonte(s) do filtro' +
-            (!managing && pending.size ? ' · ' + pending.size + ' selecionada(s)' : '') + '.';
+            (selection().size ? ' · ' + selection().size + ' selecionada(s)' : '') + '.';
         showAll.textContent = filter.showAll ? 'Mostrar menos' : 'Mostrar todas (' + matching.length + ')';
         showAll.hidden = matching.length <= 80;
-        selectAll.hidden = clear.hidden = apply.hidden = managing;
+        apply.hidden = managing;
+        remove.hidden = !managing;
         activate.hidden = deactivate.hidden = !managing;
         selectAll.disabled = activate.disabled = deactivate.disabled = busy || !matching.length;
-        clear.disabled = apply.disabled = busy || !pending.size;
+        clear.disabled = busy || !selection().size;
+        apply.disabled = busy || !pending.size;
+        remove.disabled = busy || !removal.size;
         repo.disabled = addRepo.disabled = refreshButton.disabled = busy;
 
         list.replaceChildren(...displayed.map(row => {
             const entry = el('div', '', 'source');
             const check = el('input');
             check.type = 'checkbox';
-            check.checked = managing ? row.enabled : pending.has(sourceKey(row));
+            check.checked = selection().has(sourceKey(row));
             check.disabled = busy;
-            check.setAttribute('aria-label', (managing ? 'Ativar ' : 'Selecionar ') + row.name);
+            check.setAttribute('aria-label', 'Selecionar ' + row.name);
             check.onchange = () => {
-                if (managing) changeEnabled([row], check.checked);
-                else {
-                    if (check.checked) pending.add(sourceKey(row)); else pending.delete(sourceKey(row));
-                    render();
-                }
+                if (check.checked) selection().add(sourceKey(row)); else selection().delete(sourceKey(row));
+                render();
             };
             const caption = managing ? button(sourceLabel(row), () => sourceCatalog(row), 'source-link') :
                 el('span', sourceLabel(row));
-            const action = managing ? button('Ver catálogo', () => sourceCatalog(row)) :
-                button('Instalar', () => installRows([row]));
-            action.disabled = busy;
-            entry.append(check, caption, action);
+            const rowActions = el('div', '', 'controls source-actions');
+            if (managing) {
+                const toggle = button(row.enabled ? 'Ativa na busca' : 'Ativar na busca', () => changeEnabled([row], !row.enabled));
+                toggle.setAttribute('aria-pressed', String(row.enabled));
+                const uninstall = button('Desinstalar', () => confirmRemoval([row]));
+                toggle.disabled = uninstall.disabled = busy;
+                rowActions.append(toggle, uninstall);
+            } else {
+                const install = button('Instalar', () => installRows([row]));
+                install.disabled = busy;
+                rowActions.append(install);
+            }
+            entry.append(check, caption, rowActions);
             return entry;
         }));
     }
@@ -453,6 +481,48 @@ async function settings() {
         render();
     }
 
+    function confirmRemoval(rows) {
+        if (busy || !rows.length) return;
+        const packages = new Set(rows.filter(row => row.packageId).map(row => row.packageId));
+        const affected = sources.filter(row => packages.has(row.packageId) &&
+            !rows.some(selected => sourceKey(selected) === sourceKey(row)));
+        const dialog = el('dialog');
+        const heading = el('h2', rows.length === 1 ? 'Desinstalar ' + rows[0].name + '?' :
+            'Desinstalar ' + rows.length + ' fontes selecionadas?');
+        const description = el('p', affected.length
+            ? 'As extensões Mihon selecionadas também removem ' + affected.length + ' fonte(s) de outros idiomas.'
+            : 'As fontes removidas voltam para Instalar fontes.', 'muted');
+        const buttons = el('div', '', 'controls');
+        buttons.append(button('Cancelar', () => dialog.close()), button('Desinstalar', () => {
+            dialog.close();
+            uninstallRows(rows);
+        }, 'primary'));
+        dialog.append(heading, description, buttons);
+        dialog.addEventListener('close', () => dialog.remove(), { once: true });
+        view.append(dialog);
+        dialog.showModal();
+    }
+
+    async function uninstallRows(rows) {
+        if (busy) return;
+        busy = true;
+        render();
+        status.textContent = 'Desinstalando fontes…';
+        try {
+            const result = await api('uninstallSources', { keys: rows.map(sourceKey) });
+            for (const key of result.removed) removal.delete(key);
+            if (result.removed.length) lastResults = undefined;
+            await updateLists(false);
+            status.textContent = result.removed.length + ' fonte(s) removida(s).' +
+                (result.failed ? ' ' + result.failed + ' não puderam ser removidas.' : '');
+        } catch {
+            status.textContent = 'Não foi possível desinstalar as fontes. Tente novamente.';
+        } finally {
+            busy = false;
+            render();
+        }
+    }
+
     async function changeEnabled(rows, enabled) {
         if (busy || !rows.length) return;
         busy = true;
@@ -490,59 +560,120 @@ async function settings() {
     await load();
 }
 
-async function chapters(item, back = catalog) {
+async function chapters(item, back = catalog, loaded, previousQuery = '') {
     const page = begin();
     const status = el('p', 'Carregando capítulos…', 'muted');
-    const filter = field('search', 'Filtrar capítulos');
+    const filter = field('search', 'Filtrar capítulos por número ou título');
     filter.hidden = true;
+    filter.value = previousQuery;
     const list = el('div', '', 'list');
     view.append(button('← Voltar aos títulos', back), el('h1', item.title),
         el('p', sourceLabel(item.source), 'muted'), status, filter, list);
+    window.scrollTo(0, 0);
     try {
-        const entries = await api('chapters', { engine: item.source.engine, id: item.id });
+        const entries = loaded ?? await api('chapters', { engine: item.source.engine, id: item.id });
         if (page !== screen) return;
-        status.textContent = entries.length ? entries.length + ' capítulo(s)' : 'Nenhum capítulo disponível.';
-        filter.hidden = entries.length < 10;
+        filter.hidden = !entries.length;
         function showChapters() {
-            const query = filter.value.trim().toLowerCase();
-            const matched = entries.map((entry, i) => ({ entry, i }))
-                .filter(({ entry }) => entry.name.toLowerCase().includes(query));
+            const matched = findChapters(entries, filter.value);
+            status.textContent = !entries.length ? 'Nenhum capítulo disponível.' :
+                matched.length + ' de ' + entries.length + ' capítulo(s).';
             list.replaceChildren();
-            for (const { entry, i } of matched.slice(0, 80))
-                list.append(button(entry.name, () => reader(item, entries, i, back)));
-            if (matched.length > 80)
-                list.append(el('small', 'Refine o filtro para encontrar os demais capítulos.'));
+            const fragment = document.createDocumentFragment();
+            const returnToList = () => chapters(item, back, entries, filter.value);
+            for (const { entry, index } of matched)
+                fragment.append(button(entry.name, () => reader(item, entries, index, returnToList)));
             if (entries.length && !matched.length)
-                list.append(el('small', 'Nenhum capítulo corresponde ao filtro.'));
+                fragment.append(el('small', 'Nenhum capítulo corresponde ao filtro.'));
+            list.append(fragment);
         }
         filter.oninput = showChapters;
         showChapters();
     } catch { if (page === screen) errorText(status, 'Não foi possível carregar os capítulos. Tente novamente.'); }
 }
 
-let enhance = localStorage.getItem('manga-upscale') === 'yes';
-async function reader(item, entries, index, back) {
+const models = { S: 'Leve (S)', M: 'Médio (M)', L: 'Pesado (L)' };
+const storedModel = localStorage.getItem('manga-upscale-model');
+let upscaleModel = Object.hasOwn(models, storedModel) ? storedModel :
+    (storedModel === 'off' || localStorage.getItem('manga-upscale') !== 'yes' ? 'off' : 'S');
+let repetitions = localStorage.getItem('manga-upscale-repetitions') === '2' ? 2 : 1;
+let zoom = 100;
+
+function readerSelect(label, choices, selected, onChange) {
+    const field = el('label', label, 'reader-field');
+    const select = el('select');
+    for (const [value, title] of choices) {
+        const option = el('option', title);
+        option.value = value;
+        select.append(option);
+    }
+    select.value = selected;
+    select.onchange = () => onChange(select.value);
+    field.append(select);
+    return field;
+}
+
+async function reader(item, entries, index, returnToList) {
     const page = begin();
     const chapter = entries[index];
-    const controls = el('div', '', 'controls');
-    const previous = button('Anterior', () => reader(item, entries, index + 1, back));
-    const next = button('Próximo', () => reader(item, entries, index - 1, back));
+    const layout = el('section', '', 'reader');
+    const navigation = el('nav', '', 'reader-rail');
+    navigation.setAttribute('aria-label', 'Navegação do capítulo');
+    const previous = button('Anterior', () => reader(item, entries, index + 1, returnToList));
+    const next = button('Próximo', () => reader(item, entries, index - 1, returnToList));
     previous.disabled = index >= entries.length - 1;
     next.disabled = index === 0;
-    const upscale = button('', toggle, 'primary');
+    navigation.append(button('← Voltar', returnToList), previous, next);
+
+    const content = el('div', '', 'reader-content');
     const status = el('p', 'Carregando páginas…', 'muted');
-    const upscaleStatus = el('p', '', 'muted');
-    upscaleStatus.setAttribute('role', 'status');
     const pages = el('div', '', 'pages');
+    content.append(el('h1', chapter.name), el('p', item.title + ' · ' + sourceLabel(item.source), 'muted'), status, pages);
+    const adjustments = el('aside', '', 'reader-rail');
+    adjustments.setAttribute('aria-label', 'Zoom e upscale');
+    const smaller = button('−', () => setZoom(zoom - 25));
+    smaller.setAttribute('aria-label', 'Diminuir zoom');
+    const larger = button('+', () => setZoom(zoom + 25));
+    larger.setAttribute('aria-label', 'Aumentar zoom');
+    const zoomValue = button('', () => setZoom(100));
+    zoomValue.setAttribute('aria-label', 'Restaurar zoom a 100%');
+    const zoomButtons = el('div', '', 'reader-zoom');
+    zoomButtons.append(smaller, zoomValue, larger);
+    const model = readerSelect('Upscale', [['off', 'Desligado'], ...Object.entries(models)],
+        upscaleModel, value => { upscaleModel = value; updateUpscale(); });
+    const passes = readerSelect('Passagens', [['1', '1 · 2×'], ['2', '2 · 4×']],
+        String(repetitions), value => { repetitions = Number(value); updateUpscale(); });
+    const upscaleStatus = el('small', '', 'reader-upscale-status');
+    upscaleStatus.setAttribute('role', 'status');
+    adjustments.append(el('strong', 'Zoom'), zoomButtons, model, passes, upscaleStatus);
+    layout.append(navigation, content, adjustments);
+    view.append(layout);
+    window.scrollTo(0, 0);
+
     const near = new Set();
     const enhancedPages = new Set();
     let generation = 0;
 
-    controls.append(button('← Capítulos', () => chapters(item, back)), previous, next, upscale);
-    view.append(el('section', '', 'reader'));
-    view.firstChild.append(el('h1', chapter.name), el('p', item.title + ' · ' + sourceLabel(item.source), 'muted'),
-        controls, status, upscaleStatus, pages);
-    window.scrollTo(0, 0);
+    function setZoom(value) {
+        const nextZoom = Math.max(50, Math.min(175, value));
+        const middle = window.innerHeight / 2;
+        const anchor = [...near].find(figure => {
+            const rect = figure.getBoundingClientRect();
+            return rect.top <= middle && rect.bottom > middle;
+        });
+        const original = anchor?.getBoundingClientRect();
+        zoom = nextZoom;
+        pages.style.setProperty('--reader-zoom', String(zoom / 100));
+        zoomValue.textContent = zoom + '%';
+        smaller.disabled = zoom === 50;
+        larger.disabled = zoom === 175;
+        content.scrollLeft = (content.scrollWidth - content.clientWidth) / 2;
+        if (anchor && original?.height) {
+            const rect = anchor.getBoundingClientRect();
+            const relative = (middle - original.top) / original.height;
+            window.scrollBy(0, rect.top + rect.height * relative - middle);
+        }
+    }
 
     const observer = new IntersectionObserver(changes => {
         for (const change of changes) {
@@ -558,21 +689,14 @@ async function reader(item, entries, index, back) {
         for (const figure of enhancedPages) URL.revokeObjectURL(figure.enhanced);
     };
 
-    function updateButton() {
-        upscale.textContent = 'Anime4K 2× ' + (enhance ? 'ligado' : 'desligado');
-        upscale.setAttribute('aria-pressed', String(enhance));
-    }
-    function toggle() {
-        enhance = !enhance;
-        localStorage.setItem('manga-upscale', enhance ? 'yes' : 'no');
+    function updateUpscale() {
+        localStorage.setItem('manga-upscale-model', upscaleModel);
+        localStorage.setItem('manga-upscale-repetitions', String(repetitions));
+        passes.querySelector('select').disabled = upscaleModel === 'off';
         generation++;
         upscaleStatus.textContent = '';
-        updateButton();
-        if (enhance) {
-            near.forEach(processPage);
-        } else {
-            for (const figure of enhancedPages) restorePage(figure);
-        }
+        for (const figure of enhancedPages) restorePage(figure);
+        if (upscaleModel !== 'off') near.forEach(processPage);
     }
     function restorePage(figure) {
         figure.ready = false;
@@ -582,33 +706,33 @@ async function reader(item, entries, index, back) {
         figure.enhanced = undefined;
     }
     async function processPage(figure) {
-        if (!enhance || !figure.ready || figure.enhanced || figure.upscaling) return;
+        if (upscaleModel === 'off' || !figure.ready || figure.enhanced || figure.upscaling) return;
         const current = generation;
         figure.upscaling = true;
         try {
-            const blob = await upscaleImage(figure.image, () =>
+            const result = await upscaleImage(figure.image, upscaleModel, repetitions, () =>
                 page === screen && generation === current && near.has(figure));
-            if (!blob || page !== screen || generation !== current) return;
-            const { naturalWidth, naturalHeight } = figure.image;
-            figure.enhanced = URL.createObjectURL(blob);
+            if (!result || page !== screen || generation !== current || !near.has(figure)) return;
+            figure.enhanced = URL.createObjectURL(result.blob);
             enhancedPages.add(figure);
             figure.image.src = figure.enhanced;
-            upscaleStatus.textContent = 'Anime4K · ' + naturalWidth + '×' + naturalHeight +
-                ' → ' + naturalWidth * 2 + '×' + naturalHeight * 2 + ' px';
+            upscaleStatus.textContent = result.width + ' × ' + result.height + ' px · ' +
+                (result.passes === 2 ? '4×' : '2×') + (result.passes < repetitions ? ' (limite da página)' : '');
             if (enhancedPages.size > 12) {
-                const distant = Array.from(enhancedPages).find(value => !near.has(value));
+                const distant = [...enhancedPages].find(value => !near.has(value));
                 if (distant) restorePage(distant);
             }
         } catch (error) {
             if (page === screen && generation === current)
-                upscaleStatus.textContent = error.message + ' A página original continua disponível.';
+                upscaleStatus.textContent = error.message + ' Exibindo a página original.';
         } finally {
             figure.upscaling = false;
             if (generation !== current && page === screen && near.has(figure)) processPage(figure);
         }
     }
 
-    updateButton();
+    setZoom(zoom);
+    passes.querySelector('select').disabled = upscaleModel === 'off';
     try {
         const urls = await api('pages', { engine: item.source.engine, id: chapter.id });
         if (page !== screen) return;

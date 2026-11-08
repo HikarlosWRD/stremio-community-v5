@@ -53,9 +53,35 @@ button[aria-pressed="true"] { background: #6746ac; border-color: #a68ee5; }
 .result-group { margin: 22px 0 28px; padding-top: 8px; border-top: 1px solid #433653; }
 .result-group .controls { justify-content: space-between; }
 .result-group > button, main > .grid + button { margin-top: 10px; }
-.reader { text-align: center; }
-.reader .controls { justify-content: center; margin: 10px 0 17px; }
-.pages { width: min(100%, 850px); margin: 15px auto; background: #0c0a11; }
+.source-actions { justify-content: flex-end; }
+dialog { max-width: min(34rem, 94vw); background: #211b32; color: inherit; border: 1px solid #5a4a74; border-radius: 12px; padding: 18px; }
+dialog::backdrop { background: #0b0814b8; }
+.reader { display: grid; grid-template-columns: 7rem minmax(0, 1fr) 10rem; gap: 12px; align-items: start; }
+.reader-content { text-align: center; overflow-x: auto; min-width: 0; }
+.reader-rail {
+    position: sticky;
+    top: 86px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid #433653;
+    border-radius: 9px;
+    background: #211b32;
+}
+.reader-rail button { padding-inline: 5px; }
+.reader-field { display: grid; gap: 4px; font-size: .875rem; }
+.reader-field select { width: 100%; min-width: 0; padding: 6px; }
+.reader-zoom { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+.reader-zoom button { flex: 1; white-space: nowrap; }
+.reader-upscale-status { overflow-wrap: anywhere; }
+.pages { width: calc(min(100%, 850px) * var(--reader-zoom, 1)); margin: 15px auto; background: #0c0a11; }
+@media (max-width: 760px) {
+    .reader { grid-template-columns: 5rem minmax(0, 1fr) 7rem; gap: 6px; }
+    .reader-rail { padding: 5px; font-size: .8rem; }
+    .reader-field { font-size: .8rem; }
+}
 .page { position: relative; margin: 0; min-height: 70px; }
 .page img { display: block; max-width: 100%; width: 100%; height: auto; }
 .page img[hidden], [hidden] { display: none; }
@@ -63,6 +89,8 @@ button[aria-pressed="true"] { background: #6746ac; border-color: #a68ee5; }
 @media (max-width: 570px) {
     header { gap: 8px; flex-wrap: wrap; }
     header nav { width: 100%; }
+    .reader-rail { top: 115px; }
+    .source-actions { grid-column: 2; justify-content: flex-start; }
     .source-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .source-filters input:first-child { grid-column: 1 / -1; }
 }

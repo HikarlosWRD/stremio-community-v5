@@ -36,4 +36,8 @@ function rankResults(rows, query) {
     });
 }
 
-module.exports = { normalize, rankResults, isAdultSource };
+function searchableSources(rows, scope) {
+    return rows.filter(row => row.installed && (scope === 'installed' || row.enabled) && !isAdultSource(row));
+}
+
+module.exports = { normalize, rankResults, isAdultSource, searchableSources };

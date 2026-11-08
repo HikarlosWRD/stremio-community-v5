@@ -7,7 +7,7 @@ const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { createInterface } = require('node:readline');
 const { setMaxListeners } = require('node:events');
-const { normalize, rankResults, isAdultSource } = require('./search-rules');
+const { normalize, rankResults, searchableSources } = require('./search-rules');
 
 const [token] = process.argv.slice(2);
 const port = 11680;
@@ -208,10 +208,11 @@ async function searchSource(source, query, position = 0, signal) {
         }))
     };
 }
-async function search(query, emit, signal) {
-    const engines = ['kotatsu', 'mihon'].filter(engine => selected.some(key => key.startsWith(engine + ':')));
+async function search(query, scope, emit, signal) {
+    const engines = ['kotatsu', 'mihon'].filter(engine =>
+        scope === 'installed' || selected.some(key => key.startsWith(engine + ':')));
     const catalog = await listSources(engines);
-    const sources = catalog.sources.filter(s => s.enabled && !isAdultSource(s));
+    const sources = searchableSources(catalog.sources, scope);
     sources.sort((a, b) => (sourceHealth.get(sourceKey(b)) ?? 0) - (sourceHealth.get(sourceKey(a)) ?? 0));
     emit({ type: 'start', total: sources.length, unavailable: catalog.unavailable });
     let index = 0;
@@ -279,6 +280,35 @@ async function command(body) {
             saveSources(nextEnabled, nextInstalled);
             return true;
         }
+        case 'uninstallSources': {
+            const { keys } = body;
+            if (!Array.isArray(keys) || !keys.length || keys.length > 5000 ||
+                keys.some(key => typeof key !== 'string' || !/^(kotatsu|mihon):[\w-]+$/.test(key)))
+                throw new Error('Seleção inválida.');
+            const targets = new Set(keys);
+            const engines = [...new Set(keys.map(key => key.split(':')[0]))];
+            const { sources } = await listSources(engines);
+            const rows = sources.filter(row => row.installed && targets.has(sourceKey(row)));
+            const removed = new Set(rows.filter(row => row.engine === 'kotatsu').map(sourceKey));
+            const packages = new Set(rows.filter(row => row.engine === 'mihon' && row.packageId).map(row => row.packageId));
+            for (const id of packages) {
+                try {
+                    await mihon('mutation($id:String!){updateExtension(input:{id:$id,patch:{uninstall:true}}){clientMutationId}}',
+                        { id }, 60000);
+                    mihonSources = undefined;
+                    const remaining = await rawSources('mihon');
+                    if (remaining.some(row => row.packageId === id)) throw new Error('Extensão ainda instalada.');
+                    for (const row of sources) {
+                        if (row.packageId === id) removed.add(sourceKey(row));
+                    }
+                } catch (error) {
+                    reportFailure('uninstall ' + id, error);
+                }
+            }
+            if (removed.size)
+                saveSources(selected.filter(key => !removed.has(key)), installedKotatsu.filter(key => !removed.has(key)));
+            return { removed: [...removed], failed: [...targets].filter(key => !removed.has(key)).length };
+        }
         case 'catalog': {
             if (!['kotatsu', 'mihon'].includes(body.engine) || !Number.isInteger(body.position) ||
                 body.position < 0 || body.position > 100000) throw new Error('Catálogo indisponível.');
@@ -310,10 +340,10 @@ async function command(body) {
             if (body.engine === 'kotatsu') return kotatsu('chapters', { id: body.id });
             if (body.engine !== 'mihon') throw new Error('Motor inválido.');
             return mihon(
-                'mutation($id:Int!){fetchMangaAndChapters(input:{id:$id,fetchManga:true,fetchChapters:true}){chapters{id name sourceOrder}}}',
+                'mutation($id:Int!){fetchMangaAndChapters(input:{id:$id,fetchManga:true,fetchChapters:true}){chapters{id name chapterNumber sourceOrder}}}',
                 { id: idNumber(body.id) }).then(d => d.fetchMangaAndChapters.chapters
                     .sort((a, b) => b.sourceOrder - a.sourceOrder)
-                    .map(c => ({ id: String(c.id), name: c.name })));
+                    .map(c => ({ id: String(c.id), name: c.name, number: c.chapterNumber })));
         case 'pages':
             if (body.engine === 'kotatsu') return (await kotatsu('pages', { id: body.id })).map(p => media('kotatsu', p));
             if (body.engine !== 'mihon') throw new Error('Motor inválido.');
@@ -345,12 +375,18 @@ async function readImage(entry) {
     return { type, bytes: Buffer.concat(chunks, size) };
 }
 
+const sourceMutations = new Set(['enable', 'installKotatsu', 'install', 'uninstallSources']);
+let pendingSourceMutation = Promise.resolve();
 const files = new Map([
     ['', ['ui/index.html', 'text/html; charset=utf-8']],
     ['app.js', ['ui/app.js', 'text/javascript; charset=utf-8']],
     ['style.css', ['ui/style.css', 'text/css; charset=utf-8']],
     ['upscale.js', ['ui/upscale.js', 'text/javascript; charset=utf-8']],
-    ['anime4k.glsl', ['../portable_config/shaders/Anime4K_Upscale_CNN_x2_S.glsl', 'text/plain; charset=utf-8']],
+    ['chapter-list.mjs', ['ui/chapter-list.mjs', 'text/javascript; charset=utf-8']],
+    ...['S', 'M', 'L'].map(model => [
+        'anime4k-' + model + '.glsl',
+        ['../portable_config/shaders/Anime4K_Upscale_CNN_x2_' + model + '.glsl', 'text/plain; charset=utf-8']
+    ]),
 ]);
 http.createServer(async (req, res) => {
     res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
@@ -373,6 +409,8 @@ http.createServer(async (req, res) => {
             const body = JSON.parse(raw);
             if (body.op === 'search') {
                 const query = validateQuery(body.query);
+                const scope = body.scope ?? 'active';
+                if (!['active', 'installed'].includes(scope)) throw new Error('Escopo inválido.');
                 const client = new AbortController();
                 setMaxListeners(0, client.signal);
                 res.once('close', () => client.abort());
@@ -381,14 +419,21 @@ http.createServer(async (req, res) => {
                 const emit = event => {
                     if (!client.signal.aborted) res.write(JSON.stringify(event) + '\n');
                 };
-                try { await search(query, emit, client.signal); }
+                try { await search(query, scope, emit, client.signal); }
                 catch (error) {
                     reportFailure('search', error);
                     emit({ type: 'unavailable' });
                 }
                 res.end();
             } else {
-                const data = await command(body);
+                let result;
+                if (sourceMutations.has(body.op)) {
+                    result = pendingSourceMutation.then(() => command(body));
+                    pendingSourceMutation = result.catch(() => {});
+                } else {
+                    result = command(body);
+                }
+                const data = await result;
                 res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }).end(JSON.stringify(data));
             }
         } else if (req.method === 'GET' && route.startsWith('image/')) {

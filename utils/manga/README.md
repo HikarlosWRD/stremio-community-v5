@@ -3,16 +3,20 @@
 Em **Fontes → Instalar fontes**, adicione os parsers Kotatsu disponíveis ou
 extensões Mihon de um repositório HTTPS de sua confiança. As fontes adicionadas
 ficam em **Gerenciar instaladas**, onde é possível ativá-las para a busca ou
-abrir o catálogo de uma fonte diretamente. Os filtros de nome, idioma, motor e
+abrir o catálogo de uma fonte diretamente. Também é possível desinstalar uma ou
+várias fontes. Remover uma extensão Mihon retira todos os idiomas dela. Os
+filtros de nome, idioma, motor e
 palavras excluídas também se aplicam à seleção em lote.
 
 Os resultados aparecem por fonte conforme as consultas terminam. A busca
 prioriza correspondências exatas e ignora fontes identificadas como 18+.
-Ao abrir um título, escolha um
-capítulo. O leitor faz carregamento sob demanda durante a rolagem vertical.
-O botão **Anime4K 2×** aplica o shader original
-`Anime4K_Upscale_CNN_x2_S.glsl` do Community às páginas próximas à área visível.
-Páginas que excedem o limite de tamanho da GPU são exibidas na resolução original.
+Use **Todas as instaladas** para consultar também as fontes desativadas.
+A lista de capítulos exibe todas as entradas retornadas pela fonte e filtra por
+número ou título. O leitor carrega páginas sob demanda durante a rolagem vertical.
+As barras laterais oferecem navegação, zoom e Anime4K do Community nos modelos
+S, M e L. Uma passagem amplia a resolução em 2× e duas, em 4×. Se a segunda
+passagem exceder o limite da página, o leitor aplica apenas a primeira. Se nem
+a primeira couber, a imagem original é exibida.
 
 A compatibilidade depende de cada fonte e do site. A ponte Kotatsu desta prévia
 não implementa páginas que exigem WebView, resolução de CAPTCHA ou remontagem de

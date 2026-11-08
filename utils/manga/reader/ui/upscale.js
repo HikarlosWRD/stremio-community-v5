@@ -1,5 +1,5 @@
-// Runs the stock mpv Anime4K x2 small shader with the same five passes in WebGL2.
-let renderer;
+// Runs the stock mpv Anime4K x2 shader variants in WebGL2.
+const renderers = new Map();
 let queue = Promise.resolve();
 
 function compile(gl, kind, source) {
@@ -55,11 +55,11 @@ void main() {
     return { program, inputs, output, final };
 }
 
-async function initialize() {
-    const response = await fetch('anime4k.glsl');
+async function initialize(model) {
+    const response = await fetch('anime4k-' + model + '.glsl');
     if (!response.ok) throw new Error('Shader original do Community indisponível.');
     const chunks = (await response.text()).split(/^\/\/!DESC /m).slice(1);
-    if (chunks.length !== 5) throw new Error('Shader Anime4K incompatível.');
+    if (!chunks.length) throw new Error('Shader Anime4K incompatível.');
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false });
     if (!gl || !gl.getExtension('EXT_color_buffer_float'))
@@ -70,7 +70,7 @@ void main() {
     uv = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
     gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }`);
-    const passes = chunks.map((chunk, index) => buildPass(gl, vertex, chunk, index === 4));
+    const passes = chunks.map((chunk, index) => buildPass(gl, vertex, chunk, index === chunks.length - 1));
     gl.deleteShader(vertex);
     return { canvas, gl, passes, framebuffer: gl.createFramebuffer(),
         maximum: gl.getParameter(gl.MAX_TEXTURE_SIZE) };
@@ -87,19 +87,7 @@ function texture(gl, smooth) {
     return value;
 }
 
-async function render(image, stillNeeded) {
-    if (!stillNeeded()) return;
-    renderer ??= initialize().catch(error => { renderer = undefined; throw error; });
-    const { canvas, gl, passes, framebuffer, maximum } = await renderer;
-    if (!stillNeeded()) return;
-    if (gl.isContextLost()) {
-        renderer = undefined;
-        throw new Error('A GPU interrompeu o Anime4K.');
-    }
-    const w = image.naturalWidth;
-    const h = image.naturalHeight;
-    if (!w || !h || w * 2 > maximum || h * 2 > maximum || w * h * 4 > 16000000)
-        throw new Error('Página grande demais para Anime4K 2×.');
+function draw({ canvas, gl, passes, framebuffer }, image, w, h) {
     canvas.width = w * 2;
     canvas.height = h * 2;
     const textures = new Map();
@@ -125,20 +113,56 @@ async function render(image, stillNeeded) {
             gl.drawArrays(gl.TRIANGLES, 0, 3);
         }
         if (gl.getError() !== gl.NO_ERROR) throw new Error('A GPU não conseguiu processar a página.');
-        return await new Promise((resolve, reject) => {
-            canvas.toBlob(blob => {
-                if (blob) resolve(blob);
-                else reject(new Error('Falha ao exibir a página com Anime4K.'));
-            });
-        });
     } finally {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         for (const value of textures.values()) gl.deleteTexture(value);
     }
 }
 
-export function upscaleImage(image, stillNeeded) {
-    const job = queue.then(() => render(image, stillNeeded));
+async function render(image, model, repetitions, stillNeeded) {
+    if (!stillNeeded()) return;
+    if (!renderers.has(model)) {
+        renderers.set(model, initialize(model).catch(error => {
+            renderers.delete(model);
+            throw error;
+        }));
+    }
+    const renderer = await renderers.get(model);
+    const { canvas, gl, maximum } = renderer;
+    if (!stillNeeded()) return;
+    if (gl.isContextLost()) {
+        renderers.delete(model);
+        throw new Error('A GPU interrompeu o Anime4K.');
+    }
+    const width = image.naturalWidth;
+    const height = image.naturalHeight;
+    const fits = scale => width * scale <= maximum && height * scale <= maximum &&
+        width * height * scale * scale <= 16000000;
+    const count = repetitions === 2 && fits(4) ? 2 : 1;
+    if (!width || !height || !fits(2)) throw new Error('Página grande demais para Anime4K.');
+    let input = image;
+    try {
+        for (let i = 0; i < count; i++) {
+            if (!stillNeeded()) return;
+            const scale = 2 ** i;
+            draw(renderer, input, width * scale, height * scale);
+            if (i + 1 < count) input = await createImageBitmap(canvas);
+        }
+        const blob = await new Promise((resolve, reject) => {
+            canvas.toBlob(value => {
+                if (value) resolve(value);
+                else reject(new Error('Falha ao exibir a página com Anime4K.'));
+            });
+        });
+        return { blob, width: canvas.width, height: canvas.height, passes: count };
+    } finally {
+        if (input !== image) input.close();
+        canvas.width = canvas.height = 1;
+    }
+}
+
+export function upscaleImage(image, model, repetitions, stillNeeded) {
+    const job = queue.then(() => render(image, model, repetitions, stillNeeded));
     queue = job.catch(() => {});
     return job;
 }
