@@ -16,6 +16,7 @@ let includeAdult = localStorage.getItem('manga-include-adult') === 'yes';
 let lastResults;
 let dispose = () => {};
 const libraryStorageKey = 'manga-library-v1';
+const lastLibraryArt = new Map();
 function readLibrary() {
     try { return JSON.parse(localStorage.getItem(libraryStorageKey)) || { version: 1, works: {} }; }
     catch { return { version: 1, works: {} }; }
@@ -32,6 +33,8 @@ function updateWork(item, update) {
     if (item.artwork) existing.item.artwork = item.artwork;
     update(existing);
     data.works[key] = existing;
+    if (!existing.inLibrary && data.readingQueue)
+        data.readingQueue = data.readingQueue.filter(entry => entry !== key);
     saveLibrary(data);
 }
 
@@ -40,37 +43,36 @@ function savedCover(item) {
 }
 
 function library(home = false) {
-    const works = Object.values(readLibrary().works)
+    const data = readLibrary();
+    const works = Object.values(data.works)
         .filter(work => work.inLibrary && (!home || work.lastChapter?.id != null));
     const activity = work => (home ? work.lastReadAt ?? work.updatedAt : work.updatedAt) || 0;
     works.sort((a, b) => activity(b) - activity(a));
-    const featured = works[0];
-    const cover = featured && savedCover(featured.item);
-    const artwork = featured?.item.artwork || cover;
-    begin(artwork, home ? 'manga-home' : 'library');
+    const tab = home ? 'manga-home' : 'library';
+    const previous = works.findIndex(work => workKey(work.item) === lastLibraryArt.get(tab));
+    const featured = works.length ? works[(previous + 1) % works.length].item : null;
+    if (featured) lastLibraryArt.set(tab, workKey(featured));
+    const artwork = featured ? featured.artwork || savedCover(featured) : '';
+    begin(artwork, tab);
     window.scrollTo(0, 0);
-    const heading = introHero(home ? 'CONTINUE SUA LEITURA' : 'SUA BIBLIOTECA',
-        featured?.item.title || (home ? 'Continue sua leitura' : 'Sua biblioteca'), '', artwork, cover);
-    view.append(heading.panel);
+    const heading = el('section', '', 'recommendation-hero collection-hero');
+    if (artwork) heading.append(artImage(artwork, 'recommendation-banner'));
+    heading.append(el('h1', home ? 'Home' : 'Biblioteca'));
+    view.append(heading);
     if (!works.length) {
-        heading.details.append(el('p', home ? 'Comece a ler uma obra da biblioteca para vê-la aqui.' :
+        view.append(el('p', home ? 'Comece a ler uma obra da biblioteca para vê-la aqui.' :
             'Adicione uma obra à biblioteca para encontrá-la aqui.', 'muted'));
-        heading.details.append(button('Explorar obras', catalog, 'primary'));
+        view.append(button('Explorar obras', catalog, 'primary'));
         return;
     }
     const grid = el('div', '', 'grid');
-    for (const [position, work] of works.entries()) {
+    const queue = home ? null : readingQueue(data);
+    for (const work of works) {
         const item = { ...work.item, cover: savedCover(work.item) };
         const back = () => library(home);
-        const tile = position ? el('article', '', 'library-tile') : el('div', '', 'controls');
-        if (position) tile.append(workCard(item, back));
-        else {
-            const progress = work.lastChapter;
-            heading.details.append(el('p', home
-                ? (progress.name || 'Capítulo em andamento') + ' · Página ' + ((progress.page ?? 0) + 1)
-                : works.length + (works.length === 1 ? ' obra salva' : ' obras salvas'), 'muted'), tile);
-            tile.append(button('Ver capítulos', () => chapters(item, back)));
-        }
+        const tile = el('article', '', 'library-tile');
+        tile.append(workCard(item, back));
+        if (queue) queue.addBookmark(tile, item);
         if (home) {
             const progress = work.lastChapter;
             tile.append(button('▶ Continuar', () => chapters(item, back, undefined, '', progress.id, progress.page), 'primary'));
@@ -85,9 +87,102 @@ function library(home = false) {
                 tile.append(shortcut);
             }
         }
-        if (position) grid.append(tile);
+        grid.append(tile);
     }
-    if (grid.children.length) view.append(el('h2', home ? 'Outras leituras' : 'Outras obras salvas'), grid);
+    if (queue) {
+        const layout = el('div', '', 'library-layout');
+        layout.append(grid, queue.panel);
+        view.append(layout);
+    } else view.append(grid);
+}
+
+function readingQueue(data) {
+    const keys = [...new Set(data.readingQueue || [])].filter(key => data.works[key]?.inLibrary);
+    const bookmarks = new Map();
+    const panel = el('aside', '', 'reading-queue');
+    const list = el('ol', '', 'reading-queue-list');
+    const empty = el('p', 'Marque as obras que você quer ler para montar sua fila.', 'muted');
+    panel.append(el('h2', 'Fila de leitura'), empty, list);
+    function commit() {
+        const current = readLibrary();
+        current.readingQueue = keys;
+        saveLibrary(current);
+        render();
+    }
+    function move(key, index) {
+        const previous = keys.indexOf(key);
+        if (previous < 0 || previous === index || index < 0 || index >= keys.length) return;
+        keys.splice(previous, 1);
+        keys.splice(index, 0, key);
+        commit();
+    }
+    function render() {
+        empty.hidden = keys.length > 0;
+        list.replaceChildren();
+        keys.forEach((key, index) => {
+            const item = data.works[key].item;
+            const row = el('li', '', 'queue-entry');
+            row.dataset.position = index;
+            const grip = el('span', '⠿ ' + (index + 1), 'queue-position');
+            grip.title = 'Arrastar para reordenar';
+            let target;
+            grip.onpointerdown = event => {
+                if (event.button !== 0) return;
+                grip.setPointerCapture(event.pointerId);
+                row.classList.add('dragging');
+            };
+            grip.onpointermove = event => {
+                if (!grip.hasPointerCapture(event.pointerId)) return;
+                target?.classList.remove('drop-target');
+                target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.queue-entry');
+                if (target !== row) target?.classList.add('drop-target');
+            };
+            grip.onlostpointercapture = () => {
+                row.classList.remove('dragging');
+                target?.classList.remove('drop-target');
+                target = undefined;
+            };
+            grip.onpointerup = event => {
+                if (!grip.hasPointerCapture(event.pointerId)) return;
+                const destination = document.elementFromPoint(event.clientX, event.clientY)?.closest('.queue-entry');
+                if (destination && list.contains(destination)) move(key, Number(destination.dataset.position));
+            };
+            const open = button(item.title, () => chapters({ ...item, cover: savedCover(item) }, () => library()),
+                'queue-work');
+            const up = button('↑', () => move(key, index - 1));
+            const down = button('↓', () => move(key, index + 1));
+            up.setAttribute('aria-label', 'Subir ' + item.title);
+            down.setAttribute('aria-label', 'Descer ' + item.title);
+            up.disabled = index === 0;
+            down.disabled = index === keys.length - 1;
+            row.append(grip, open, up, down);
+            list.append(row);
+        });
+        for (const [key, { mark, title }] of bookmarks) {
+            const marked = keys.includes(key);
+            mark.setAttribute('aria-pressed', String(marked));
+            mark.setAttribute('aria-label', (marked ? 'Remover da fila: ' : 'Adicionar à fila: ') + title);
+        }
+    }
+    render();
+    return {
+        panel,
+        addBookmark(tile, item) {
+            const key = workKey(item);
+            const mark = button('', () => {
+                const index = keys.indexOf(key);
+                if (index < 0) keys.push(key);
+                else keys.splice(index, 1);
+                commit();
+            }, 'queue-bookmark');
+            mark.append(el('span', '', 'bookmark-icon'));
+            bookmarks.set(key, { mark, title: item.title });
+            const marked = keys.includes(key);
+            mark.setAttribute('aria-pressed', String(marked));
+            mark.setAttribute('aria-label', (marked ? 'Remover da fila: ' : 'Adicionar à fila: ') + item.title);
+            tile.append(mark);
+        }
+    };
 }
 
 function el(tag, text, className) {
@@ -423,7 +518,7 @@ function artImage(url, className) {
 function tabArtwork() { return trendingArt[themeOrder.indexOf(themeTab) % trendingArt.length]; }
 
 function refreshAmbient() {
-    const url = selectedArt || tabArtwork();
+    const url = selectedArt ?? tabArtwork();
     if (ambient.dataset.artwork === (url || '')) return;
     ambient.dataset.artwork = url || '';
     ambient.replaceChildren();
@@ -432,21 +527,17 @@ function refreshAmbient() {
     image.onerror = () => {
         if (!image.isConnected) return;
         image.remove();
-        if (selectedArt && tabArtwork() && tabArtwork() !== url)
+        if (themeTab !== 'manga-home' && themeTab !== 'library' && selectedArt && tabArtwork() && tabArtwork() !== url)
             ambient.append(artImage(tabArtwork(), 'ambient-image'));
     };
     ambient.append(image);
 }
 
-function introHero(kicker, title, copy, artwork, cover) {
+function introHero(kicker, title, copy) {
     const panel = el('section', '', 'recommendation-hero screen-hero');
-    if (artwork) panel.append(artImage(artwork, 'recommendation-banner'));
-    else {
-        panel.dataset.themeArt = themeTab;
-        addThemeBanner(panel);
-    }
+    panel.dataset.themeArt = themeTab;
+    addThemeBanner(panel);
     const content = el('div', '', 'recommendation-info');
-    if (cover) content.append(artImage(cover, 'work-cover'));
     const details = el('div');
     details.append(el('small', kicker, 'hero-kicker'), el('h1', title));
     if (copy) details.append(el('p', copy, 'muted'));
@@ -491,6 +582,11 @@ function recommendations(state = { rows: [], next: 1, scroll: 0 }) {
     const controller = new AbortController();
     const heading = introHero('ANILIST · TRENDING MANGA', 'Recomendados',
         'Descubra o que está em alta e encontre uma fonte para ler.');
+    const dice = button('⚄', surprise, 'recommendation-dice');
+    dice.setAttribute('aria-label', 'Sortear uma obra');
+    dice.title = 'Sortear uma obra';
+    dice.disabled = !state.rows.length;
+    heading.panel.append(dice);
     const cards = el('div', '', 'grid recommendations-grid');
     const status = el('p', '', 'muted');
     status.setAttribute('role', 'status');
@@ -503,15 +599,43 @@ function recommendations(state = { rows: [], next: 1, scroll: 0 }) {
         if (!failed && changes.some(change => change.isIntersecting)) load();
     }, { rootMargin: '500px' });
     dispose = () => { controller.abort(); observer.disconnect(); };
+    const back = () => recommendations(state);
+    function read(work) {
+        state.scroll = window.scrollY;
+        const title = work.title.english || work.title.romaji;
+        const alternate = work.title.romaji && work.title.romaji !== title ? work.title.romaji.slice(0, 150) : '';
+        searchView({ work, back, query: title.slice(0, 150), alternate });
+    }
+    function surprise() {
+        const dialog = el('dialog', '', 'recommendation-preview');
+        dialog.setAttribute('aria-label', 'Obra sorteada');
+        const close = () => dialog.close();
+        dialog.addEventListener('close', () => dialog.remove(), { once: true });
+        let previous;
+        function roll() {
+            const candidates = state.rows.filter(work =>
+                (work.title.english || work.title.romaji) && work.id !== previous);
+            if (!candidates.length) return;
+            const work = candidates[Math.floor(Math.random() * candidates.length)];
+            previous = work.id;
+            const hero = recommendationHero({ work, back: close });
+            hero.querySelector('.recommendation-close').setAttribute('aria-label', 'Fechar prévia');
+            const controls = el('div', '', 'controls');
+            const reroll = button('⚄ Sortear outra', roll);
+            reroll.disabled = state.rows.length < 2;
+            controls.append(button('Começar leitura', () => { close(); read(work); }, 'primary'), reroll);
+            hero.querySelector('.recommendation-info > div').append(controls);
+            dialog.replaceChildren(hero);
+            if (dialog.open) reroll.focus();
+        }
+        roll();
+        view.append(dialog);
+        dialog.showModal();
+    }
     function add(work) {
         const title = work.title.english || work.title.romaji;
         if (!title) return;
-        const back = () => recommendations(state);
-        const card = workCard({ title, cover: work.coverImage?.large }, back, () => {
-            state.scroll = window.scrollY;
-            const alternate = work.title.romaji && work.title.romaji !== title ? work.title.romaji.slice(0, 150) : '';
-            searchView({ work, back, query: title.slice(0, 150), alternate });
-        });
+        const card = workCard({ title, cover: work.coverImage?.large }, back, () => read(work));
         cards.append(card);
     }
     state.rows.forEach(add);
@@ -530,12 +654,13 @@ function recommendations(state = { rows: [], next: 1, scroll: 0 }) {
             const data = await api('trending', { page: state.next }, controller.signal);
             if (page !== screen) return;
             for (const work of data.rows) {
-                if (seen.has(work.id)) continue;
+                if (seen.has(work.id) || !(work.title.english || work.title.romaji)) continue;
                 seen.add(work.id);
                 state.rows.push(work);
                 add(work);
             }
             state.next = data.more ? state.next + 1 : null;
+            dice.disabled = !state.rows.length;
             more.hidden = state.next === null;
             status.textContent = state.rows.length ? '' : 'Nenhuma recomendação disponível.';
         } catch {

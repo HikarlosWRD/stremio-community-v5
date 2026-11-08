@@ -56,7 +56,22 @@ button { cursor: pointer; }
 .bookmark-icon { display: inline-block; width: 12px; height: 16px; vertical-align: middle; background: currentColor; clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 73%, 0 100%, 0 0, 18% 15%, 18% 72%, 50% 55%, 82% 72%, 82% 15%, 18% 15%); }
 .chapter-mark[aria-pressed="true"] .bookmark-icon { clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 73%, 0 100%); }
 .hero-kicker { color: #e1e1e1; font-size: .75rem; font-weight: 700; letter-spacing: .14em; }
-.library-tile { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.library-tile { position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.library-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 22%); gap: 24px; align-items: start; }
+.queue-bookmark { position: absolute; top: 14px; right: 14px; width: 35px; height: 35px; padding: 0; background: #101010e8; color: #eee; }
+.queue-bookmark[aria-pressed="true"] { color: #ffcf55; background: #292314; border-color: #a17a25; }
+.queue-bookmark[aria-pressed="true"] .bookmark-icon { clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 73%, 0 100%); }
+.reading-queue { padding: 15px; border: 1px solid var(--border); border-radius: 14px; background: #191919ed; }
+.reading-queue h2 { margin: 0 0 10px; }
+.reading-queue p { margin: 0; font-size: .9rem; }
+.reading-queue-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.queue-entry { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 4px; align-items: center; padding: 5px; border-radius: 8px; background: #242424; }
+.queue-entry.dragging { opacity: .45; }
+.queue-entry.drop-target { outline: 1px solid #ffcf55; }
+.queue-entry button { padding: 4px 6px; }
+.queue-position { padding: 5px; white-space: nowrap; cursor: grab; touch-action: none; user-select: none; color: var(--muted); }
+.queue-work { text-align: left; border-color: transparent; background: transparent; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .library-layout { grid-template-columns: minmax(0, 1fr); } }
 .home-chapter { text-align: left; font-size: .82rem; overflow-wrap: anywhere; }
 .home-chapter-read { color: #aaa; }
 .work-description p { white-space: pre-line; margin: 8px 0; }
@@ -87,6 +102,14 @@ p { line-height: 1.45; }
 .recommendation-hero { isolation: isolate; position: relative; overflow: hidden; min-height: 310px; display: grid; align-items: end; padding: clamp(20px, 4vw, 46px); margin-bottom: 28px; border: 1px solid #505050; border-radius: 20px; background: #242424; box-shadow: 0 20px 60px #0005; }
 .recommendation-banner { position: absolute; inset: 0; z-index: -2; width: 100%; height: 100%; object-fit: cover; object-position: center 30%; }
 .recommendation-hero::before { content: ''; position: absolute; inset: 0; z-index: -1; background: linear-gradient(0deg, #111 2%, #111b 46%, #1112), linear-gradient(90deg, #111d, #1114 70%); }
+.collection-hero { place-items: center; min-height: clamp(145px, 15vw, 230px); text-align: center; }
+.collection-hero::before { background: radial-gradient(ellipse at center, #080808b8, #080808e8 100%); }
+.collection-hero .recommendation-banner { filter: brightness(.55); }
+.collection-hero h1 { margin: 0; font-size: clamp(2rem, 4vw, 3.25rem); text-transform: uppercase; letter-spacing: .12em; }
+.recommendation-dice { position: absolute; top: 16px; right: 16px; width: 44px; height: 44px; padding: 0; background: #171717e8; font-size: 1.65rem; }
+.recommendation-preview { width: min(880px, 94vw); max-width: none; padding: 0; }
+.recommendation-preview .recommendation-hero { margin: 0; min-height: 330px; border: 0; border-radius: inherit; }
+.recommendation-preview .controls { margin-top: 14px; }
 .screen-hero { min-height: clamp(230px, 27vw, 340px); }
 .screen-hero .recommendation-info { align-items: center; }
 .screen-hero .recommendation-info form { margin-top: 18px; }
