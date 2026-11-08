@@ -84,6 +84,41 @@ html:fullscreen body.header-collapsed .header-reveal:hover { background: #333; }
 .chapter-mark[aria-pressed="true"] .bookmark-icon { clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 73%, 0 100%); }
 .hero-kicker { color: #e1e1e1; font-size: .75rem; font-weight: 700; letter-spacing: .14em; }
 .library-tile { position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.library-grid { align-items: start; }
+.library-grid .library-tile > .card {
+    display: grid;
+    grid-template-rows: auto 5.4em;
+    gap: 7px;
+    width: 100%;
+    align-content: start;
+}
+.library-grid .library-tile > .card strong {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    overflow: hidden;
+    min-width: 0;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+.home-library-grid .library-tile {
+    display: grid;
+    grid-template-rows: auto 46px repeat(3, 44px);
+    align-content: start;
+    gap: 6px;
+}
+.home-library-grid .library-tile > button.primary {
+    height: 46px;
+    min-height: 0;
+    white-space: nowrap;
+}
+.home-library-grid .library-tile > .home-chapter {
+    height: 44px;
+    min-height: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .library-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 22%); gap: 24px; align-items: start; }
 .queue-bookmark { position: absolute; top: 14px; right: 14px; width: 35px; height: 35px; padding: 0; background: #101010e8; color: #eee; }
 .queue-bookmark[aria-pressed="true"] { color: #ffcf55; background: #292314; border-color: #a17a25; }

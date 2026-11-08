@@ -158,13 +158,14 @@ function library(home = false) {
         view.append(button('Explorar obras', catalog, 'primary'));
         return;
     }
-    const grid = el('div', '', 'grid');
+    const grid = el('div', '', home ? 'grid library-grid home-library-grid' : 'grid library-grid');
     const queue = home ? null : readingQueue(data);
     for (const work of works) {
         const item = { ...work.item, cover: savedCover(work.item) };
         const back = () => library(home);
         const tile = el('article', '', 'library-tile');
         const card = workCard(item, back);
+        card.title = item.title;
         tile.append(card);
         const image = card.querySelector('img');
         if (image) showLibraryCover(image, item);
