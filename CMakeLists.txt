@@ -57,6 +57,7 @@ set(SOURCES
         src/updater/updater.h
         src/webview/webview.h
         src/webview/webview.cpp
+        src/webview/manga.cpp
         src/ui/mainwindow.h
         src/ui/mainwindow.cpp
         src/resource.h
@@ -75,6 +76,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         Shcore.lib
         Msimg32.lib
         winhttp.lib
+        ole32.lib
         shlwapi.lib
         nlohmann_json::nlohmann_json
         unofficial::webview2::webview2

@@ -1,0 +1,60 @@
+:root {
+    color-scheme: dark;
+    font: 16px system-ui, sans-serif;
+    background: #14121d;
+    color: #f3effb;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+header {
+    position: sticky;
+    z-index: 1;
+    top: 0;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 13px clamp(12px, 4vw, 46px);
+    background: #211b32;
+    border-bottom: 1px solid #3c3150;
+}
+header strong { margin-right: auto; font-size: 1.2rem; }
+nav, form, .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+button, input {
+    font: inherit;
+    border: 1px solid #5a4a74;
+    border-radius: 8px;
+    padding: 8px 12px;
+    background: #282138;
+    color: inherit;
+}
+button { cursor: pointer; }
+button:hover, button:focus-visible { border-color: #b09afa; background: #3a2c55; }
+button:disabled { cursor: default; opacity: .5; }
+button.primary { background: #6746ac; border-color: #a68ee5; }
+input[type="search"], input[type="url"] { width: min(100%, 470px); }
+main { max-width: 1280px; margin: auto; padding: 22px clamp(12px, 4vw, 46px) 60px; }
+h1 { margin: 8px 0 14px; font-size: clamp(1.6rem, 4vw, 2.35rem); }
+h2 { font-size: 1.18rem; }
+p { line-height: 1.45; }
+.muted, small { color: #c4b8d8; }
+.error { color: #ffc5b1; white-space: pre-line; overflow-wrap: anywhere; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.card { display: flex; flex-direction: column; align-items: stretch; gap: 7px; padding: 8px; text-align: left; }
+.card img, .placeholder { width: 100%; aspect-ratio: 2 / 3; border-radius: 5px; background: #383047; object-fit: cover; }
+.card strong { overflow-wrap: anywhere; }
+.panel { border: 1px solid #433653; padding: 15px; border-radius: 10px; margin: 15px 0; }
+.list { display: grid; gap: 6px; margin-top: 10px; }
+.list > button { text-align: left; }
+.source { display: flex; gap: 10px; align-items: center; justify-content: space-between; border-bottom: 1px solid #403650; padding: 6px; }
+.source input { margin-right: 10px; }
+.reader { text-align: center; }
+.reader .controls { justify-content: center; margin: 10px 0 17px; }
+.pages { width: min(100%, 850px); margin: 15px auto; background: #0c0a11; }
+.page { position: relative; margin: 0; min-height: 70px; }
+.page img { display: block; max-width: 100%; width: 100%; height: auto; }
+.page img[hidden], [hidden] { display: none; }
+.page > button { margin: 10px; }
+@media (max-width: 570px) {
+    header { gap: 8px; flex-wrap: wrap; }
+    header nav { width: 100%; }
+}

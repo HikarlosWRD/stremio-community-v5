@@ -43,7 +43,7 @@ bool FocusExistingInstance(const std::wstring &protocolArg)
 
 bool CheckSingleInstance(int argc, char* argv[], std::wstring &outProtocolArg)
 {
-    g_hMutex = CreateMutexW(nullptr, FALSE, L"SingleInstanceMtx_StremioStreamingPreview");
+    g_hMutex = CreateMutexW(nullptr, FALSE, L"SingleInstanceMtx_StremioMangaPreview");
     const bool alreadyRunning = GetLastError() == ERROR_ALREADY_EXISTS;
     if(!g_hMutex){
         std::wcerr << L"CreateMutex failed => fallback to multi.\n";
@@ -441,10 +441,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     }
+    case WM_MANGA_READY:
+        FinishMangaTab(wParam != 0);
+        return 0;
     case WM_COMMAND:
     {
         switch(LOWORD(wParam))
         {
+        case ID_TRAY_MANGA:
+            OpenMangaTab();
+            break;
         case ID_TRAY_SHOWWINDOW:
             g_showWindow = !g_showWindow;
             ShowWindow(hWnd, g_showWindow?SW_SHOW:SW_HIDE);

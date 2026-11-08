@@ -26,9 +26,9 @@ using json = nlohmann::json;
 // -----------------------------------------------------------------------------
 // App info
 // -----------------------------------------------------------------------------
-#define APP_TITLE "Stremio Community - Streaming Preview"
-#define APP_NAME  "StremioStreamingPreview"
-#define APP_CLASS L"StremioStreamingPreview"
+#define APP_TITLE "Stremio Community - Manga Preview"
+#define APP_NAME  "StremioMangaPreview"
+#define APP_CLASS L"StremioMangaPreview"
 #define APP_VERSION "5.0.22"
 
 // -----------------------------------------------------------------------------
@@ -67,6 +67,7 @@ extern std::unordered_set<std::string> g_mpvSetPropAllowlist;
 // custom messages
 #define WM_MPV_WAKEUP (WM_APP + 2)
 #define WM_TRAYICON   (WM_APP + 1)
+#define WM_MANGA_READY (WM_APP + 3)
 
 // Node server
 extern std::atomic_bool g_nodeRunning;
@@ -89,6 +90,7 @@ extern wil::com_ptr<ICoreWebView2_21>         g_webview;
 #define ID_TRAY_PAUSE_FOCUS_LOST  1006
 #define ID_TRAY_PICTURE_IN_PICTURE 1007
 #define ID_TRAY_QUIT             1008
+#define ID_TRAY_MANGA            1009
 
 struct MenuItem
 {

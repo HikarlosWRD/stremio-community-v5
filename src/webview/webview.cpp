@@ -15,7 +15,7 @@
 static const wchar_t* EXEC_SHELL_SCRIPT = LR"JS_CODE(
 try {
     console.log('Shell JS injected');
-    if (window.self === window.top && !window.qt) {
+    if (window.self === window.top && !window.qt && location.origin !== 'http://127.0.0.1:11680') {
       window.qt = {
         webChannelTransport: {
           send: window.chrome.webview.postMessage,
@@ -333,6 +333,7 @@ static void SetupWebMessageHandler()
             wil::unique_cotaskmem_string rawUri;
             sender->get_Source(&rawUri);
             std::wstring finalUri = rawUri ? rawUri.get() : L"";
+            if (IsMangaUri(finalUri)) return S_OK;
             std::wcout << L"[WEBVIEW]: Navigation try to " << finalUri << std::endl;
 
             // Add back to stremio button if not on stremio
@@ -343,6 +344,18 @@ static void SetupWebMessageHandler()
             if(isSuccess) {
                 std::cout<<"[WEBVIEW]: Navigation Complete - Success\n";
                 sender->ExecuteScript(EXEC_SHELL_SCRIPT, nullptr);
+                if (IsHomeWebUri(finalUri)) sender->ExecuteScript(LR"JS((() => {
+                    if (document.getElementById('community-manga-tab')) return;
+                    const button = document.createElement('button');
+                    button.id = 'community-manga-tab';
+                    button.textContent = 'Mang\u00e1s';
+                    button.style.cssText = 'position:fixed;bottom:18px;left:14px;z-index:9999;padding:8px 12px;border:1px solid #a48aff;border-radius:9px;background:#332651;color:#fff;cursor:pointer;font:600 14px system-ui';
+                    button.onclick = () => window.chrome.webview.postMessage('manga-open');
+                    const update = () => { button.hidden = location.hash.startsWith('#/player'); };
+                    addEventListener('hashchange', update);
+                    document.body.append(button);
+                    update();
+                })())JS", nullptr);
                 // Flush the script queue.
                 if (!g_scriptQueue.empty()) {
                     for (const auto &script : g_scriptQueue) {
@@ -483,6 +496,17 @@ static void SetupWebMessageHandler()
             args->TryGetWebMessageAsString(&msgRaw);
             if(!msgRaw) return S_OK;
             std::wstring wstr(msgRaw.get());
+            wil::unique_cotaskmem_string source;
+            args->get_Source(&source);
+            const std::wstring from = source ? source.get() : L"";
+            if (IsMangaUri(from)) {
+                if (wstr == L"manga-close") g_webview->Navigate(g_webuiUrl.c_str());
+                return S_OK;
+            }
+            if (wstr == L"manga-open") {
+                if (IsHomeWebUri(from)) OpenMangaTab();
+                return S_OK;
+            }
             std::string str = WStringToUtf8(wstr);
             HandleInboundJSON(str);
 
@@ -548,9 +572,12 @@ static void SetupWebMessageHandler()
                 args->get_Uri(&uri);
                 std::wstring destination(uri.get());
 
-                if (!URLContainsAny(destination)) {
+                if (!IsMangaUri(destination) && !URLContainsAny(destination)) {
                     args->put_Cancel(TRUE);
-                    ShellExecuteW(nullptr, L"open", uri.get(), nullptr, nullptr, SW_SHOWNORMAL);
+                    wil::unique_cotaskmem_string current;
+                    sender->get_Source(&current);
+                    if (!current || !IsMangaUri(current.get()))
+                        ShellExecuteW(nullptr, L"open", uri.get(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
                 return S_OK;
             }

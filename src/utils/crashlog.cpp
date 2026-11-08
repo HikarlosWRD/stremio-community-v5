@@ -6,6 +6,7 @@
 #include "../mpv/player.h"
 #include "../node/server.h"
 #include "../tray/tray.h"
+#include "../webview/webview.h"
 #include "../utils/helpers.h"
 #include <gdiplus.h>
 #include <sstream>
@@ -60,6 +61,7 @@ void Cleanup()
     CleanupMPV();
     // Shut down Node
     StopNodeServer();
+    StopMangaServer();
     // Remove tray icon
     RemoveTrayIcon();
 

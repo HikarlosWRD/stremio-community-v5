@@ -34,6 +34,7 @@ const FFMPEG_FOLDER = path.join(SOURCE_DIR, 'utils', 'windows', 'ffmpeg');
 const MPV_FOLDER = path.join(SOURCE_DIR, 'utils', 'mpv', 'anime4k');
 const STOCK_MPV_CONFIG = path.join(SOURCE_DIR, 'utils', 'mpv', 'Default Portable Config.7z');
 const DEFAULT_SETTINGS_FOLDER = path.join(SOURCE_DIR, 'utils', 'stremio');
+const MANGA_DIR = path.join(SOURCE_DIR, 'utils', 'manga');
 
 // Default Paths
 const DEFAULT_NSIS = 'C:\\Program Files (x86)\\NSIS\\makensis.exe';
@@ -51,6 +52,14 @@ const VCPKG_CMAKE = 'G:\\Documents\\Github\\vcpkg\\scripts\\buildsystems\\vcpkg.
         const buildInstaller = args.includes('--installer');
         const buildPortable = args.includes('--portable');
         const debugBuild = args.includes('--debug');
+        const mangaRuntimeArg = args.find(arg => arg.startsWith('--manga-runtime='));
+        const mangaRuntime = mangaRuntimeArg && path.resolve(mangaRuntimeArg.slice('--manga-runtime='.length));
+        if (mangaRuntime) {
+            if (ARCH !== 'x64' || buildInstaller) throw new Error('Manga preview requires an x64 portable build.');
+            for (const asset of ['runtime/bin/java.exe', 'suwayomi.jar', 'kotatsu/lib/kotatsu-bridge.jar']) {
+                if (!fs.existsSync(path.join(mangaRuntime, asset))) throw new Error('Missing manga runtime asset: ' + asset);
+            }
+        }
 
         // 3) Run CMake + Ninja in ../cmake-build-release (64-bit)
         if (!fs.existsSync(BUILD_DIR)) {
@@ -94,6 +103,11 @@ const VCPKG_CMAKE = 'G:\\Documents\\Github\\vcpkg\\scripts\\buildsystems\\vcpkg.
         copyFolderContentsPreservingStructure(MPV_FOLDER, DIST_DIR);
         execFileSync('tar.exe', ['-xf', STOCK_MPV_CONFIG, '-C', DIST_DIR, 'portable_config/shaders'], { stdio: 'inherit' });
         copyFolderContentsPreservingStructure(DEFAULT_SETTINGS_FOLDER, CONFIG_DIR);
+        if (mangaRuntime) {
+            const readerDest = path.join(DIST_DIR, 'manga');
+            fs.cpSync(mangaRuntime, readerDest, { recursive: true });
+            fs.cpSync(path.join(MANGA_DIR, 'reader'), readerDest, { recursive: true });
+        }
 
         console.log('\n=== dist\\win preparation complete. ===');
 

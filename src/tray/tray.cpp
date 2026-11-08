@@ -27,7 +27,7 @@ void CreateTrayIcon(HWND hWnd)
     HICON hIcon = LoadIcon(g_hInst, MAKEINTRESOURCE(IDR_MAINFRAME));
     g_nid.hIcon = hIcon;
 
-    _tcscpy_s(g_nid.szTip, _T("Stremio Streaming Preview"));
+    _tcscpy_s(g_nid.szTip, _T("Stremio Manga Preview"));
 
     Shell_NotifyIcon(NIM_ADD,&g_nid);
 }
@@ -119,6 +119,7 @@ static void ShowDarkTrayMenu()
 {
     g_menuItems.clear();
     g_menuItems.push_back({ ID_TRAY_SHOWWINDOW,   g_showWindow,   false, L"Show Window" });
+    g_menuItems.push_back({ ID_TRAY_MANGA, false, false, L"Mang\u00e1s e webtoons" });
     g_menuItems.push_back({ ID_TRAY_ALWAYSONTOP,  g_alwaysOnTop,  false, L"Always on Top" });
     g_menuItems.push_back({ ID_TRAY_PICTURE_IN_PICTURE, g_isPipMode, false, L"Picture in Picture" });
     g_menuItems.push_back({ ID_TRAY_PAUSE_MINIMIZED, g_pauseOnMinimize, false, L"Pause Minimized" });

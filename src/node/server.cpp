@@ -27,7 +27,7 @@ bool StartNodeServer()
 {
     // Avoid changing another Stremio installation's cache and torrent profile.
     if (IsEndpointReachable(L"http://127.0.0.1:11470/settings")) {
-        SetWindowTextW(g_hWnd, L"Stremio Community - Streaming Preview (servidor compartilhado)");
+        SetWindowTextA(g_hWnd, APP_TITLE " (servidor compartilhado)");
         return true;
     }
 
