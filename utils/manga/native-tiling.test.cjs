@@ -20,7 +20,7 @@ const sandbox = {
         ok: true, blob: async () => ({ width: options.body.width * 2,
             height: options.body.height * 2, size: 567 })
     }),
-    Error, Math, Promise, Number
+    Error, Math, Promise, Number, AbortController
 };
 vm.runInNewContext(code + '\nthis.tiles = { nativeTilePlan, nativeWholeFits, upscaleNative };', sandbox);
 test('tile plans cover long pages completely and never exceed native limits', () => {
@@ -84,4 +84,44 @@ test('native upscaler retries with smaller blocks when Vulkan rejects a large ti
     } finally {
         sandbox.fetch = originalFetch;
     }
+});test('tiled upscale runs two image requests concurrently, never three', async () => {
+    const originalFetch = sandbox.fetch;
+    let active = 0, peak = 0, issued = 0;
+    sandbox.fetch = async (url, options) => {
+        issued++;
+        peak = Math.max(peak, ++active);
+        await new Promise(resolve => setTimeout(resolve, 4));
+        active--;
+        return originalFetch(url, options);
+    };
+    try {
+        const image = { naturalWidth: 1400, naturalHeight: 6500 };
+        const result = await sandbox.tiles.upscaleNative(image, 'realcugan', 2,
+            new AbortController().signal);
+        assert.equal(result.tiled, true);
+        assert.ok(issued > 2);
+        assert.equal(peak, 2);
+    } finally { sandbox.fetch = originalFetch; }
+});
+test('jumping away aborts the two active tiles and never starts old tiles', async () => {
+    const originalFetch = sandbox.fetch;
+    let launched = 0;
+    const controller = new AbortController();
+    sandbox.fetch = (_url, options) => {
+        launched++;
+        return new Promise((resolve, reject) => {
+            if (options.signal.aborted) return reject(options.signal.reason);
+            options.signal.addEventListener('abort', () => reject(options.signal.reason),
+                { once: true });
+        });
+    };
+    try {
+        const pending = sandbox.tiles.upscaleNative(
+            { naturalWidth: 1400, naturalHeight: 6500 }, 'realcugan', 2, controller.signal);
+        await new Promise(resolve => setTimeout(resolve, 12));
+        assert.equal(launched, 2);
+        controller.abort(new Error('page changed'));
+        await assert.rejects(pending, /page changed/);
+        assert.equal(launched, 2);
+    } finally { sandbox.fetch = originalFetch; }
 });

@@ -12,8 +12,45 @@ const models = Object.freeze({
 const maxInputBytes = 25 * 1024 * 1024;
 const maxPixels = 24000000;
 const pngSignature = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
-let queue = Promise.resolve();
+const parallelJobs = 2;
+const pendingJobs = [];
+let runningJobs = 0;
 let queued = 0;
+
+function dispatchJobs() {
+    while (runningJobs < parallelJobs && pendingJobs.length) {
+        const task = pendingJobs.shift();
+        task.signal.removeEventListener('abort', task.cancel);
+        if (task.signal.aborted) {
+            task.reject(task.signal.reason);
+            continue;
+        }
+        runningJobs++;
+        Promise.resolve().then(() => processImage(task.png, task.modelName, task.signal))
+            .then(task.resolve, task.reject)
+            .finally(() => {
+                runningJobs--;
+                dispatchJobs();
+            });
+    }
+}
+
+function scheduleNative(png, modelName, signal) {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+        const task = { png, modelName, signal, resolve, reject };
+        task.cancel = () => {
+            const index = pendingJobs.indexOf(task);
+            if (index < 0) return;
+            pendingJobs.splice(index, 1);
+            reject(signal.reason);
+            dispatchJobs();
+        };
+        signal.addEventListener('abort', task.cancel, { once: true });
+        pendingJobs.push(task);
+        dispatchJobs();
+    });
+}
 
 function validateImage(png, scale) {
     if (png.length < 24 || !png.subarray(0, 16).equals(pngSignature))
@@ -95,9 +132,7 @@ async function restore(req, modelName, signal) {
     queued++;
     try {
         const png = await readInput(req);
-        const job = queue.then(() => processImage(png, modelName, signal));
-        queue = job.catch(() => {});
-        return await job;
+        return await scheduleNative(png, modelName, signal);
     } finally {
         queued--;
     }

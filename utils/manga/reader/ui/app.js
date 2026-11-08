@@ -1343,6 +1343,15 @@ function readerSelect(label, choices, selected, onChange) {
     return field;
 }
 
+function shouldPreemptUpscale(activeJob, visible, upcoming, variant, generation) {
+    if (!activeJob || activeJob.signal.aborted) return false;
+    if (!upcoming.includes(activeJob.figure)) return true;
+    if (!visible || activeJob.figure === visible) return false;
+    const key = visible.original + ':' + variant;
+    return !visible.loadFailed && visible.displayed !== key &&
+        visible.failedGeneration !== generation;
+}
+
 async function reader(item, entries, index, returnToList, resumePage = 0) {
     const page = begin(item.artwork || item.cover || savedCover(item));
     const chapter = entries[index];
@@ -1474,6 +1483,12 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
                 visible = figure;
             }
         }
+        if (!visible) {
+            const bounds = pages.getBoundingClientRect();
+            const x = Math.max(0, Math.min(window.innerWidth - 1, bounds.left + bounds.width / 2));
+            const hit = document.elementFromPoint(x, center)?.closest('.page');
+            if (hit && figures.includes(hit)) visible = hit;
+        }
         if (!visible) return;
         visible.loadPage();
         const number = visible.pageNumber;
@@ -1488,6 +1503,12 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
         }
         upcoming = figures.slice(number, number + 4);
         if (upscaleModel !== 'off') {
+            const variant = nativeScales[upscaleModel] ? upscaleModel :
+                [upscaleModel, repetitions, refineColor].join(':');
+            if (shouldPreemptUpscale(activeJob, visible, upcoming, variant, generation)) {
+                activeJob.abort();
+                upscaleStatus.textContent = 'Priorizando página ' + (number + 1) + '…';
+            }
             for (const figure of upcoming) figure.loadPage();
             scheduleUpscale();
         }
@@ -1554,6 +1575,7 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
         const key = keyFor(figure);
         const current = generation;
         const job = new AbortController();
+        job.figure = figure;
         activeJob = job;
         const stillNeeded = () => page === screen && generation === current && !job.signal.aborted;
         try {

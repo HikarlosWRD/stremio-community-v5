@@ -299,26 +299,50 @@ export async function upscaleNative(image, model, scale, signal, onProgress = ()
         }
     }
     let lastError;
+    let parallel = 2;
     for (const side of (scale >= 4 ? [640, 384, 256] : [1024, 640, 384])) {
         const plan = nativeTilePlan(width, height, side);
         const total = plan.reduce((sum, row) => sum + row.length, 0);
-        const rows = [];
+        const rows = plan.map(row => new Array(row.length));
+        const tasks = plan.flatMap((row, rowIndex) => row.map((region, columnIndex) =>
+            ({ region, rowIndex, columnIndex })));
+        let next = 0;
         let done = 0;
+        let firstFailure;
+        const attempt = new AbortController();
+        const cancelAttempt = () => attempt.abort(signal.reason);
+        signal.addEventListener('abort', cancelAttempt, { once: true });
         try {
-            for (const row of plan) {
-                const pieces = [];
-                for (const region of row) {
+            async function worker() {
+                while (next < tasks.length && !firstFailure) {
                     signal.throwIfAborted();
-                    pieces.push(await nativeProcessRegion(image, region, model, scale, signal));
-                    onProgress(++done, total);
+                    const task = tasks[next++];
+                    try {
+                        const piece = await nativeProcessRegion(image, task.region, model, scale, attempt.signal);
+                        signal.throwIfAborted();
+                        rows[task.rowIndex][task.columnIndex] = piece;
+                        onProgress(++done, total);
+                    } catch (error) {
+                        if (!firstFailure) {
+                            firstFailure = error;
+                            attempt.abort(error);
+                        }
+                        throw error;
+                    }
                 }
-                rows.push(pieces);
             }
+            const workers = await Promise.allSettled(
+                Array.from({ length: Math.min(parallel, total) }, () => worker()));
+            const failure = workers.find(result => result.status === 'rejected');
+            if (failure) throw failure.reason;
             return { rows, width: width * scale, height: height * scale, scale, tiled: true };
         } catch (error) {
             if (signal.aborted || !/limite|resolu|mem[oó]ria|processar|processamento|tempo|sa[ií]da|entrada/i.test(error.message))
                 throw error;
             lastError = error;
+            parallel = 1;
+        } finally {
+            signal.removeEventListener('abort', cancelAttempt);
         }
     }
     throw lastError || new Error('Não foi possível processar esta página por blocos.');
