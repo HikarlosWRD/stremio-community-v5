@@ -56,6 +56,13 @@ main > :not(dialog), .recommendations-grid > .card { animation: ui-enter var(--m
 .fullscreen-toggle .fullscreen-exit { display: none; }
 .fullscreen-toggle[aria-pressed="true"] .fullscreen-enter { display: none; }
 .fullscreen-toggle[aria-pressed="true"] .fullscreen-exit { display: block; }
+.header-collapse-toggle, .header-reveal { display: none; place-items: center; flex: none; width: 36px; height: 36px; padding: 0; border-radius: 10px; background: #242424; }
+.header-collapse-toggle svg, .header-reveal svg { width: 19px; height: 19px; }
+html:fullscreen header { max-height: 240px; transition: max-height var(--motion-main) var(--motion-ease), padding var(--motion-main) var(--motion-ease), opacity var(--motion-fast) ease; }
+html:fullscreen .header-collapse-toggle { display: grid; }
+html:fullscreen body.header-collapsed header { max-height: 0; min-height: 0; padding-top: 0; padding-bottom: 0; border-bottom: 0; opacity: 0; overflow: hidden; pointer-events: none; }
+html:fullscreen body.header-collapsed .header-reveal { display: grid; position: fixed; top: 8px; right: 18px; z-index: 4; background: #181818e8; box-shadow: 0 3px 14px #0009; backdrop-filter: blur(12px); }
+html:fullscreen body.header-collapsed .header-reveal:hover { background: #333; }
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
@@ -199,12 +206,17 @@ main:has(.reader) { max-width: none; }
 }
 .page { position: relative; margin: 0; min-height: 70px; }
 .page img { display: block; max-width: 100%; width: 100%; height: auto; }
+.enhanced-tiles { width: 100%; }
+.enhanced-tile-row { display: flex; width: 100%; align-items: stretch; }
+.enhanced-tile-cell { min-width: 0; overflow: hidden; }
+.enhanced-tile-cell img { display: block; width: 100%; height: auto; }
 .page img[hidden], [hidden] { display: none; }
 .page > button { margin: 10px; }
 @media (max-width: 570px) {
     header { gap: 8px; flex-wrap: wrap; }
     header nav { width: 100%; order: 3; }
     header .fullscreen-toggle { order: 2; margin-left: auto; }
+    header .header-collapse-toggle { order: 2; }
     .work-hero, .recommendation-info { gap: 14px; }
     .screen-hero .recommendation-info { align-items: flex-start; }
     .reader-rail { top: 115px; }

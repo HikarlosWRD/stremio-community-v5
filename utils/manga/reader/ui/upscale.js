@@ -205,18 +205,37 @@ export function upscaleImage(image, model, repetitions, refineColor, stillNeeded
     return job;
 }
 
-export async function upscaleNative(image, model, scale, signal) {
-    const { naturalWidth: width, naturalHeight: height } = image;
-    if (width * scale > 16384 || height * scale > 16384 || width * height * scale * scale > 24000000)
-        throw new Error('A página excede o limite de resolução deste modelo.');
+function nativeTilePlan(width, height, side, overlap = 24) {
+    const rows = [];
+    for (let y = 0; y < height; y += side) {
+        const row = [];
+        for (let x = 0; x < width; x += side) {
+            const coreWidth = Math.min(side, width - x);
+            const coreHeight = Math.min(side, height - y);
+            const left = Math.max(0, x - overlap);
+            const top = Math.max(0, y - overlap);
+            const right = Math.min(width, x + coreWidth + overlap);
+            const bottom = Math.min(height, y + coreHeight + overlap);
+            row.push({ x, y, coreWidth, coreHeight, left, top,
+                inputWidth: right - left, inputHeight: bottom - top });
+        }
+        rows.push(row);
+    }
+    return rows;
+}
+
+function nativeWholeFits(width, height, scale) {
+    return width > 0 && height > 0 && width * scale <= 16384 &&
+        height * scale <= 16384 && width * height * scale * scale <= 24000000;
+}
+
+async function nativeCanvasBlob(canvas) {
+    return new Promise((resolve, reject) => canvas.toBlob(blob =>
+        blob ? resolve(blob) : reject(new Error('Não foi possível preparar a página.')), 'image/png'));
+}
+
+async function nativeRequest(input, model, signal) {
     signal.throwIfAborted();
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    canvas.getContext('2d').drawImage(image, 0, 0);
-    const input = await new Promise((resolve, reject) => {
-        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Não foi possível preparar a página.')));
-    }).finally(() => { canvas.width = canvas.height = 1; });
     const response = await fetch('restore/' + model, {
         method: 'POST', headers: { 'Content-Type': 'image/png', 'x-reader-request': '1' },
         body: input, signal
@@ -225,5 +244,82 @@ export async function upscaleNative(image, model, scale, signal) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || 'O modelo Vulkan não conseguiu processar esta página.');
     }
-    return { blob: await response.blob(), width: width * scale, height: height * scale, scale };
+    return response.blob();
+}
+
+async function nativeProcessRegion(image, region, model, scale, signal) {
+    const canvas = document.createElement('canvas');
+    canvas.width = region.inputWidth;
+    canvas.height = region.inputHeight;
+    try {
+        const ctx = canvas.getContext('2d', { alpha: false });
+        if (!ctx) throw new Error('Não foi possível preparar o bloco de imagem.');
+        ctx.drawImage(image, region.left, region.top, region.inputWidth, region.inputHeight,
+            0, 0, region.inputWidth, region.inputHeight);
+        const input = await nativeCanvasBlob(canvas);
+        signal.throwIfAborted();
+        const upscaled = await nativeRequest(input, model, signal);
+        if (region.inputWidth === region.coreWidth && region.inputHeight === region.coreHeight)
+            return { blob: upscaled, width: region.coreWidth * scale, height: region.coreHeight * scale };
+        const bitmap = await createImageBitmap(upscaled);
+        try {
+            signal.throwIfAborted();
+            const outputWidth = region.coreWidth * scale;
+            const outputHeight = region.coreHeight * scale;
+            canvas.width = outputWidth;
+            canvas.height = outputHeight;
+            const outputCtx = canvas.getContext('2d', { alpha: false });
+            if (!outputCtx) throw new Error('Não foi possível reunir os blocos.');
+            outputCtx.drawImage(bitmap, (region.x - region.left) * scale,
+                (region.y - region.top) * scale, outputWidth, outputHeight,
+                0, 0, outputWidth, outputHeight);
+            return { blob: await nativeCanvasBlob(canvas), width: outputWidth, height: outputHeight };
+        } finally {
+            bitmap.close();
+        }
+    } finally {
+        canvas.width = canvas.height = 1;
+    }
+}
+
+export async function upscaleNative(image, model, scale, signal, onProgress = () => {}) {
+    const { naturalWidth: width, naturalHeight: height } = image;
+    if (!width || !height) throw new Error('A página ainda não foi carregada.');
+    signal.throwIfAborted();
+    if (nativeWholeFits(width, height, scale)) {
+        try {
+            const part = await nativeProcessRegion(image, {
+                x: 0, y: 0, left: 0, top: 0, inputWidth: width, inputHeight: height,
+                coreWidth: width, coreHeight: height
+            }, model, scale, signal);
+            return { ...part, scale };
+        } catch (error) {
+            if (signal.aborted || !/limite|resolu|mem[oó]ria|processar|processamento|tempo|sa[ií]da|entrada/i.test(error.message))
+                throw error;
+        }
+    }
+    let lastError;
+    for (const side of (scale >= 4 ? [640, 384, 256] : [1024, 640, 384])) {
+        const plan = nativeTilePlan(width, height, side);
+        const total = plan.reduce((sum, row) => sum + row.length, 0);
+        const rows = [];
+        let done = 0;
+        try {
+            for (const row of plan) {
+                const pieces = [];
+                for (const region of row) {
+                    signal.throwIfAborted();
+                    pieces.push(await nativeProcessRegion(image, region, model, scale, signal));
+                    onProgress(++done, total);
+                }
+                rows.push(pieces);
+            }
+            return { rows, width: width * scale, height: height * scale, scale, tiled: true };
+        } catch (error) {
+            if (signal.aborted || !/limite|resolu|mem[oó]ria|processar|processamento|tempo|sa[ií]da|entrada/i.test(error.message))
+                throw error;
+            lastError = error;
+        }
+    }
+    throw lastError || new Error('Não foi possível processar esta página por blocos.');
 }

@@ -1445,7 +1445,7 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
         window.removeEventListener('resize', scheduleTracking);
         cancelAnimationFrame(trackingFrame);
         activeJob?.abort();
-        for (const { url } of cache.values()) URL.revokeObjectURL(url);
+        for (const entry of cache.values()) releaseUpscaleCache(entry);
     };
     window.addEventListener('scroll', scheduleTracking, { passive: true });
     window.addEventListener('resize', scheduleTracking);
@@ -1525,6 +1525,11 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
             processNext();
         });
     }
+    function releaseUpscaleCache(entry) {
+        if (entry.rows) {
+            for (const row of entry.rows) for (const tile of row) URL.revokeObjectURL(tile.url);
+        } else if (entry.url) URL.revokeObjectURL(entry.url);
+    }
     function trimCache() {
         for (const [key, value] of cache) {
             if (cacheBytes <= 96 * 1024 * 1024 && cache.size <= 24) break;
@@ -1534,7 +1539,7 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
             }
             cache.delete(key);
             cacheBytes -= value.bytes;
-            URL.revokeObjectURL(value.url);
+            releaseUpscaleCache(value);
         }
     }
     async function processNext() {
@@ -1556,19 +1561,53 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
             if (output) cache.delete(key);
             else {
                 upscaleStatus.textContent = 'Processando página ' + (figure.pageNumber + 1) + ' · ' + models[modelName] + '…';
-                const result = scale ? await upscaleNative(figure.image, modelName, scale, job.signal) :
+                const progress = (done, total) => {
+                    if (stillNeeded()) upscaleStatus.textContent = 'Upscale da página ' +
+                        (figure.pageNumber + 1) + ' · bloco ' + done + '/' + total;
+                };
+                const result = scale ? await upscaleNative(figure.image, modelName, scale, job.signal, progress) :
                     await upscaleImage(figure.image, modelName, repetitions, refineColor, stillNeeded);
                 if (!result || !stillNeeded()) return;
-                output = { figure, url: URL.createObjectURL(result.blob), bytes: result.blob.size,
+                output = { figure, bytes: result.blob?.size || 0,
                     text: result.width + ' × ' + result.height + ' px · ' + models[modelName] +
-                        (!scale && result.passes < repetitions ? ' (limite da página)' : '') };
+                        (result.tiled ? ' · em blocos' : !scale && result.passes < repetitions ? ' (limite da página)' : '') };
+                if (result.tiled) {
+                    output.rows = result.rows.map(row => row.map(tile => {
+                        output.bytes += tile.blob.size;
+                        return { url: URL.createObjectURL(tile.blob), width: tile.width };
+                    }));
+                } else output.url = URL.createObjectURL(result.blob);
                 cacheBytes += output.bytes;
             }
             cache.set(key, output);
-            const enhanced = el('img');
-            enhanced.alt = figure.image.alt;
-            enhanced.src = output.url;
-            await enhanced.decode();
+            let enhanced;
+            if (output.rows) {
+                enhanced = el('div', '', 'enhanced-tiles');
+                enhanced.setAttribute('role', 'img');
+                enhanced.setAttribute('aria-label', figure.image.alt + ' com upscale');
+                const decodes = [];
+                for (const tiles of output.rows) {
+                    const row = el('div', '', 'enhanced-tile-row');
+                    const rowWidth = tiles.reduce((sum, tile) => sum + tile.width, 0);
+                    for (const tile of tiles) {
+                        const cell = el('div', '', 'enhanced-tile-cell');
+                        cell.style.flex = '0 0 ' + tile.width / rowWidth * 100 + '%';
+                        const img = el('img');
+                        img.alt = '';
+                        img.src = tile.url;
+                        decodes.push(img.decode());
+                        cell.append(img);
+                        row.append(cell);
+                    }
+                    enhanced.append(row);
+                }
+                await Promise.all(decodes);
+            } else {
+                enhanced = el('img');
+                enhanced.alt = figure.image.alt;
+                enhanced.src = output.url;
+                await enhanced.decode();
+            }
             if (!stillNeeded() || !upcoming.includes(figure)) return;
             figure.image.hidden = true;
             figure.enhancedImage?.remove();
@@ -1664,12 +1703,30 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
 }
 
 const fullscreenToggle = document.querySelector('#toggle-fullscreen');
+const headerHide = document.querySelector('#header-hide');
+const headerShow = document.querySelector('#header-show');
+function setHeaderCollapsed(collapsed) {
+    const enabled = Boolean(document.fullscreenElement);
+    document.body.classList.toggle('header-collapsed', enabled && collapsed);
+    headerHide.setAttribute('aria-expanded', String(!(enabled && collapsed)));
+    headerShow.setAttribute('aria-expanded', String(!(enabled && collapsed)));
+    window.dispatchEvent(new Event('resize'));
+}
+headerHide.onclick = () => {
+    setHeaderCollapsed(true);
+    headerShow.focus();
+};
+headerShow.onclick = () => {
+    setHeaderCollapsed(false);
+    headerHide.focus();
+};
 function syncFullscreenToggle() {
     const enabled = Boolean(document.fullscreenElement);
     const label = enabled ? 'Sair da tela cheia' : 'Entrar em tela cheia';
     fullscreenToggle.setAttribute('aria-pressed', String(enabled));
     fullscreenToggle.setAttribute('aria-label', label);
     fullscreenToggle.title = label;
+    if (!enabled) setHeaderCollapsed(false);
 }
 fullscreenToggle.onclick = async () => {
     try {
