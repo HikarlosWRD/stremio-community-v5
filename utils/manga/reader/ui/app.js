@@ -1851,11 +1851,6 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     try {
         const urls = await api('pages', { engine: item.source.engine, id: chapter.id });
         if (page !== screen) return;
-        if (urls.length) {
-            const history = readLibrary();
-            recordChapterVisit(history, item, chapter, resumePage);
-            saveLibrary(history);
-        }
         const completion = new IntersectionObserver(changes => {
             if (page !== screen || !changes.some(change => change.isIntersecting)) return;
             updateWork(item, work => { work.read[String(chapter.id)] = true; work.updatedAt = Date.now(); });
@@ -1864,6 +1859,7 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
         const release = dispose;
         dispose = () => { completion.disconnect(); release(); };
         const resumeIndex = Math.max(0, Math.min(urls.length - 1, Number.isInteger(resumePage) ? resumePage : 0));
+        let historyRecorded = false;
         restoring = resumeIndex > 0;
         const end = el('div', 'Fim do capítulo', 'chapter-end');
         end.hidden = true;
@@ -1890,6 +1886,12 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
                 image.src = url;
             };
             image.onload = () => {
+                if (!historyRecorded && page === screen) {
+                    historyRecorded = true;
+                    const history = readLibrary();
+                    recordChapterVisit(history, item, chapter, resumeIndex);
+                    saveLibrary(history);
+                }
                 failedPages.delete(figure);
                 if (failedPages.size === 0) sourceError.hidden = true;
                 image.hidden = false;
