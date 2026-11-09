@@ -204,6 +204,16 @@ button.primary[aria-pressed="true"] { background: #454545; border-color: #888; c
 .result-group { margin: 22px 0 28px; padding-top: 8px; border-top: 1px solid var(--border); }
 .result-group .controls { justify-content: space-between; }
 .adult-flag { display: inline-flex; align-items: center; gap: 5px; }
+.search-progress { display: grid; gap: 7px; max-width: 700px; margin: -5px 0 22px; }
+.search-progress[hidden] { display: none; }
+.search-progress-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; font-size: .83rem; }
+.search-progress-label { color: #e6e6e6; font-weight: 600; }
+.search-progress-counter { color: var(--muted); font-variant-numeric: tabular-nums; }
+.search-progress-bar { display: block; width: 100%; height: 9px; border: 0; border-radius: 999px; overflow: hidden; appearance: none; background: #333; }
+.search-progress-bar::-webkit-progress-bar { border-radius: 999px; background: #333; }
+.search-progress-bar::-webkit-progress-value { border-radius: 999px; background: #d8d8d8; transition: width 210ms ease-out; }
+.search-progress-bar::-moz-progress-bar { border-radius: 999px; background: #d8d8d8; }
+
 .chapter-coverage { line-height: 1.35; }
 .result-group > button, main > .grid + button { margin-top: 10px; }
 .source-actions { justify-content: flex-end; }

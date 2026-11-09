@@ -39,6 +39,18 @@ export function compareCoverage(a, b) {
     return (a?.first ?? Number.MAX_VALUE) - (b?.first ?? Number.MAX_VALUE);
 }
 
+export function compareCoverageRange(a, b) {
+    // Wider latest chapter wins; at equal endings, the earlier first chapter wins.
+    // Unknown bounds go after measured ranges without obscuring chapter zero.
+    const aLast = Number.isFinite(a?.last) ? a.last : -Infinity;
+    const bLast = Number.isFinite(b?.last) ? b.last : -Infinity;
+    if (aLast !== bLast) return aLast > bLast ? -1 : 1;
+    const aFirst = Number.isFinite(a?.first) ? a.first : Infinity;
+    const bFirst = Number.isFinite(b?.first) ? b.first : Infinity;
+    if (aFirst !== bFirst) return aFirst < bFirst ? -1 : 1;
+    return 0;
+}
+
 export function compareAvailability(a, b) {
     if (a.coverage?.verified != null || b.coverage?.verified != null)
         return compareCoverage(a.coverage, b.coverage) || b.relevance - a.relevance;

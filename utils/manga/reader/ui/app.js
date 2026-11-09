@@ -1,6 +1,7 @@
 import { upscaleImage, upscaleNative, createNativeTileConcurrency } from './upscale.js';
 import { findChapters } from './chapter-list.mjs';
-import { compareAvailability } from './coverage.mjs';
+import { compareAvailability, compareCoverageRange } from './coverage.mjs';
+import { searchProgressState } from './search-progress.mjs';
 
 const view = document.querySelector('#view');
 const ambient = document.querySelector('#ambient-art');
@@ -414,9 +415,9 @@ function searchView(preset) {
     const artwork = preset && (preset.work.bannerImage || preset.work.coverImage?.large);
     const page = begin(artwork, preset ? 'recommendations' : 'catalog');
     const reopen = preset ? () => searchView(preset) : catalog;
-    const compareResults = preset
-        ? (a, b) => Number(b.relevance === 3) - Number(a.relevance === 3) || compareAvailability(a, b)
-        : compareAvailability;
+    const compareResults = (a, b) => compareCoverageRange(a.coverage, b.coverage) ||
+        (preset ? Number(b.relevance === 3) - Number(a.relevance === 3) : 0) ||
+        compareAvailability(a, b);
     const form = el('form');
     const input = field('search', 'Título do mangá, manhwa ou webtoon');
     input.required = true;
@@ -451,6 +452,17 @@ function searchView(preset) {
     form.append(input, scope, submit, cancel, adultLabel);
     const status = el('p', 'Os primeiros capítulos com imagem verificada aparecem primeiro.', 'muted');
     status.setAttribute('role', 'status');
+    const searchProgress = el('div', '', 'search-progress');
+    searchProgress.hidden = true;
+    const searchProgressHeader = el('div', '', 'search-progress-header');
+    const searchProgressLabel = el('span', '', 'search-progress-label');
+    const searchProgressCounter = el('span', '', 'search-progress-counter');
+    const searchProgressBar = el('progress', '', 'search-progress-bar');
+    searchProgressBar.max = 1;
+    searchProgressBar.value = 0;
+    searchProgressBar.setAttribute('aria-label', 'Progresso da busca nas fontes');
+    searchProgressHeader.append(searchProgressLabel, searchProgressCounter);
+    searchProgress.append(searchProgressHeader, searchProgressBar);
     const groups = el('div');
     if (preset) {
         view.append(recommendationHero(preset), el('h2', 'Escolha uma fonte'));
@@ -470,7 +482,7 @@ function searchView(preset) {
         heading.details.append(form);
         view.append(heading.panel);
     }
-    view.append(status, groups);
+    view.append(status, searchProgress, groups);
     let controller;
     let inspections = coverageQueue();
     const views = new Map();
@@ -530,7 +542,22 @@ function searchView(preset) {
         }
     }
 
+    function updateSearchProgress(result, active) {
+        searchProgress.hidden = !result || (!active && result.total === null);
+        if (searchProgress.hidden) return;
+        const state = searchProgressState(result, active);
+        if (state.determinate) {
+            searchProgressBar.max = state.max;
+            searchProgressBar.value = state.value;
+        } else {
+            searchProgressBar.removeAttribute('value');
+        }
+        searchProgressLabel.textContent = state.label;
+        searchProgressCounter.textContent = state.counter;
+    }
+
     function updateStatus(result, searching) {
+        updateSearchProgress(result, searching);
         const counts = result.groups.map(group => group.rows.filter(item => item.coverage?.count !== 0).length);
         const count = counts.reduce((total, size) => total + size, 0);
         const summary = count + ' título(s) em ' + counts.filter(Boolean).length + ' fonte(s).';
@@ -590,6 +617,7 @@ function searchView(preset) {
             if (controller === current && page === screen) updateStatus(currentResult, false);
         } catch {
             if (controller === current && page === screen) {
+                updateSearchProgress(currentResult, false);
                 status.textContent = current.signal.aborted
                     ? 'Busca interrompida. Os resultados já encontrados continuam abaixo.'
                     : 'A busca foi interrompida. Tente novamente.';
@@ -598,6 +626,7 @@ function searchView(preset) {
             if (controller === current) {
                 searching = false;
                 cancel.hidden = true;
+                if (page === screen) updateSearchProgress(currentResult, false);
             }
         }
     };
