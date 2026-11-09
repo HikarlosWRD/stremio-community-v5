@@ -3,6 +3,8 @@ import { createPageUpscaleQueue, nativeGpuSlots } from './page-upscale-queue.mjs
 import { findChapters } from './chapter-list.mjs';
 import { compareAvailability, compareCoverageRange } from './coverage.mjs';
 import { searchProgressState } from './search-progress.mjs';
+import { readingHistory, migrateReadingHistory, recordChapterVisit,
+    updateHistoryPage, removeHistoryEntry } from './reading-history.mjs';
 
 const view = document.querySelector('#view');
 const ambient = document.querySelector('#ambient-art');
@@ -20,13 +22,18 @@ let dispose = () => {};
 const libraryStorageKey = 'manga-library-v1';
 const lastLibraryArt = new Map();
 function readLibrary() {
-    try { return JSON.parse(localStorage.getItem(libraryStorageKey)) || { version: 1, works: {} }; }
-    catch { return { version: 1, works: {} }; }
+    let data;
+    try { data = JSON.parse(localStorage.getItem(libraryStorageKey)); }
+    catch { /* Restore a valid empty library when storage is damaged. */ }
+    if (!data || typeof data !== 'object' || !data.works || typeof data.works !== 'object')
+        data = { version: 1, works: {} };
+    if (migrateReadingHistory(data)) saveLibrary(data);
+    return data;
 }
 function workKey(item) { return JSON.stringify([item.source.engine, String(item.id)]); }
 function saveLibrary(data) { localStorage.setItem(libraryStorageKey, JSON.stringify(data)); }
 function savedWork(item) { return readLibrary().works[workKey(item)]; }
-function updateWork(item, update) {
+function updateWork(item, update, updateHistory) {
     const data = readLibrary();
     const key = workKey(item);
     const existing = data.works[key] || { item, inLibrary: false, read: {} };
@@ -37,6 +44,7 @@ function updateWork(item, update) {
     data.works[key] = existing;
     if (!existing.inLibrary && data.readingQueue)
         data.readingQueue = data.readingQueue.filter(entry => entry !== key);
+    updateHistory?.(data);
     saveLibrary(data);
 }
 
@@ -155,13 +163,20 @@ function library(home = false) {
         if (image) showLibraryCover(image, featured);
     }
     if (!works.length) {
-        view.append(el('p', home ? 'Comece a ler uma obra da biblioteca para vê-la aqui.' :
-            'Adicione uma obra à biblioteca para encontrá-la aqui.', 'muted'));
-        view.append(button('Explorar obras', catalog, 'primary'));
+        const empty = el('div', '', 'library-empty');
+        empty.append(el('p', home ? 'Comece a ler uma obra da biblioteca para vê-la aqui.' :
+            'Adicione uma obra à biblioteca para encontrá-la aqui.', 'muted'),
+            button('Explorar obras', catalog, 'primary'));
+        if (home) {
+            const layout = el('div', '', 'library-layout home-history-layout');
+            layout.append(empty, readingHistoryPanel());
+            view.append(layout);
+        } else view.append(empty);
         return;
     }
     const grid = el('div', '', home ? 'grid library-grid home-library-grid' : 'grid library-grid');
     const queue = home ? null : readingQueue(data);
+    const historyPanel = home ? readingHistoryPanel() : null;
     for (const work of works) {
         const item = { ...work.item, cover: savedCover(work.item) };
         const back = () => library(home);
@@ -189,11 +204,54 @@ function library(home = false) {
         }
         grid.append(tile);
     }
-    if (queue) {
-        const layout = el('div', '', 'library-layout');
-        layout.append(grid, queue.panel);
+    if (queue || historyPanel) {
+        const layout = el('div', '', home ? 'library-layout home-history-layout' : 'library-layout');
+        layout.append(grid, queue ? queue.panel : historyPanel);
         view.append(layout);
     } else view.append(grid);
+}
+
+function readingHistoryPanel() {
+    const panel = el('aside', '', 'reading-queue reading-history');
+    const heading = el('h2', 'Histórico de leitura');
+    const empty = el('p', 'Os capítulos que você abrir aparecerão aqui.', 'muted');
+    const list = el('ol', '', 'reading-history-list');
+    list.setAttribute('aria-label', 'Histórico de capítulos lidos');
+    panel.append(heading, empty, list);
+
+    function render() {
+        const scrollTop = list.scrollTop;
+        const history = readingHistory(readLibrary());
+        empty.hidden = history.length > 0;
+        const fragment = document.createDocumentFragment();
+        for (const entry of history) {
+            const row = el('li', '', 'history-entry');
+            const title = entry.item.title || 'Obra sem título';
+            const chapter = entry.chapterName || 'Capítulo';
+            const open = button('', () => {
+                const item = { ...entry.item, cover: savedCover(entry.item) };
+                void chapters(item, () => library(true), undefined, '', entry.chapterId, entry.page);
+            }, 'history-work');
+            open.title = 'Ler ' + title + ' — ' + chapter;
+            open.append(el('strong', title, 'history-work-title'),
+                el('small', chapter, 'history-chapter'));
+            const remove = button('', () => {
+                const data = readLibrary();
+                if (!removeHistoryEntry(data, entry.id)) return;
+                saveLibrary(data);
+                render();
+            }, 'history-delete');
+            remove.setAttribute('aria-label', 'Excluir ' + chapter + ' de ' + title + ' do histórico');
+            remove.title = 'Excluir do histórico';
+            remove.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6m5 4v7m4-7v7"/></svg>';
+            row.append(open, remove);
+            fragment.append(row);
+        }
+        list.replaceChildren(fragment);
+        list.scrollTop = scrollTop;
+    }
+    render();
+    return panel;
 }
 
 function readingQueue(data) {
@@ -1616,7 +1674,7 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
                 work.lastChapter = { id: String(chapter.id), name: chapter.name, page: number };
                 work.chapters = entries;
                 work.lastReadAt = work.updatedAt = Date.now();
-            });
+            }, data => updateHistoryPage(data, item, chapter.id, number));
         }
         if (visible !== focusedFigure && upscaleModel !== 'off') {
             upscaleStatus.textContent = visible.displayed ?
@@ -1785,6 +1843,11 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     try {
         const urls = await api('pages', { engine: item.source.engine, id: chapter.id });
         if (page !== screen) return;
+        if (urls.length) {
+            const history = readLibrary();
+            recordChapterVisit(history, item, chapter, resumePage);
+            saveLibrary(history);
+        }
         const completion = new IntersectionObserver(changes => {
             if (page !== screen || !changes.some(change => change.isIntersecting)) return;
             updateWork(item, work => { work.read[String(chapter.id)] = true; work.updatedAt = Date.now(); });

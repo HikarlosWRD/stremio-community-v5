@@ -493,6 +493,7 @@ const files = new Map([
     ['chapter-list.mjs', ['ui/chapter-list.mjs', 'text/javascript; charset=utf-8']],
     ['search-progress.mjs', ['ui/search-progress.mjs', 'text/javascript; charset=utf-8']],
     ['page-upscale-queue.mjs', ['ui/page-upscale-queue.mjs', 'text/javascript; charset=utf-8']],
+    ['reading-history.mjs', ['ui/reading-history.mjs', 'text/javascript; charset=utf-8']],
     ['coverage.mjs', ['coverage.mjs', 'text/javascript; charset=utf-8']],
     ...['S', 'M', 'L'].map(model => [
         'anime4k-' + model + '.glsl',
