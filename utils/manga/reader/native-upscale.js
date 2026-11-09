@@ -137,7 +137,7 @@ async function processImage(png, modelName, signal) {
 
 async function restore(req, modelName, signal) {
     if (!Object.hasOwn(models, modelName)) throw new Error('Modelo inválido.');
-    if (queued >= maximumParallelJobs * 2) throw new Error('A fila de upscale está ocupada.');
+    if (queued >= maximumParallelJobs * 6) throw new Error('A fila de upscale está ocupada.');
     queued++;
     try {
         const png = await readInput(req);

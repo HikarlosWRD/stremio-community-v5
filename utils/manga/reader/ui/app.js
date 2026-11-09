@@ -1,4 +1,5 @@
 import { upscaleImage, upscaleNative, createNativeTileConcurrency } from './upscale.js';
+import { createPageUpscaleQueue, nativeGpuSlots } from './page-upscale-queue.mjs';
 import { findChapters } from './chapter-list.mjs';
 import { compareAvailability, compareCoverageRange } from './coverage.mjs';
 import { searchProgressState } from './search-progress.mjs';
@@ -1420,10 +1421,14 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
         upscaleModel, value => { upscaleModel = value; updateUpscale(); });
     const tileConcurrency = createNativeTileConcurrency(
         Number(localStorage.getItem('manga-upscale-parallel-tiles')) || 2);
-    let nativeSync = Promise.resolve();
+    const storedPages = Number(localStorage.getItem('manga-upscale-parallel-pages'));
+    let pageConcurrency = Number.isInteger(storedPages) && storedPages >= 1 && storedPages <= 4 ?
+        storedPages : 2;
+    let desiredPages = pageConcurrency;
     let desiredTiles = tileConcurrency.limit;
-    function syncNativeConcurrency(value) {
-        nativeSync = configureNativeConcurrency(value);
+    let nativeSync = Promise.resolve();
+    function syncNativeConcurrency() {
+        nativeSync = configureNativeConcurrency(nativeGpuSlots(desiredTiles, desiredPages));
         return nativeSync;
     }
     const concurrentTiles = readerSelect('Blocos simultâneos',
@@ -1435,11 +1440,11 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
             if (next < tileConcurrency.limit) tileConcurrency.setLimit(next);
             const select = concurrentTiles.querySelector('select');
             select.title = 'Aplicando quantidade de blocos…';
-            void syncNativeConcurrency(next).then(() => {
+            void syncNativeConcurrency().then(() => {
                 if (desiredTiles !== next || page !== screen) return;
                 tileConcurrency.setLimit(next);
                 localStorage.setItem('manga-upscale-parallel-tiles', String(next));
-                select.title = 'Mais blocos usam mais memória da GPU.';
+                select.title = 'Até oito processos Vulkan simultâneos no total.';
             }).catch(error => {
                 if (desiredTiles !== next || page !== screen) return;
                 desiredTiles = tileConcurrency.limit;
@@ -1447,8 +1452,39 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
                 select.title = error.message;
             });
         });
-    concurrentTiles.title = 'Mais blocos usam mais memória e podem reduzir o desempenho.';
-    if (nativeScales[upscaleModel]) void syncNativeConcurrency(desiredTiles).catch(() => {});
+    concurrentTiles.title = 'Blocos por página. A GPU compartilha no máximo oito processos.';
+    const concurrentPages = readerSelect('Páginas simultâneas',
+        Array.from({ length: 4 }, (_, i) => [String(i + 1),
+            i === 1 ? '2 · Padrão' : String(i + 1)]),
+        String(pageConcurrency), value => {
+            const next = Number(value);
+            const previous = pageConcurrency;
+            desiredPages = next;
+            if (next < pageConcurrency) {
+                pageConcurrency = next;
+                pageQueue.setLimit(next);
+            }
+            const select = concurrentPages.querySelector('select');
+            select.title = 'Aplicando quantidade de páginas…';
+            void syncNativeConcurrency().then(() => {
+                if (desiredPages !== next || page !== screen) return;
+                pageConcurrency = next;
+                pageQueue.setLimit(nativeScales[upscaleModel] ? next : 1);
+                localStorage.setItem('manga-upscale-parallel-pages', String(next));
+                select.title = 'Páginas prontas são mostradas independentemente das outras.';
+                scheduleTracking();
+                scheduleUpscale();
+            }).catch(error => {
+                if (desiredPages !== next || page !== screen) return;
+                desiredPages = previous;
+                pageConcurrency = previous;
+                pageQueue.setLimit(nativeScales[upscaleModel] ? previous : 1);
+                select.value = String(previous);
+                select.title = error.message;
+            });
+        });
+    concurrentPages.title = 'Processa várias páginas comuns em paralelo. Mais páginas usam mais VRAM.';
+    if (nativeScales[upscaleModel]) void syncNativeConcurrency().catch(() => {});
     const passes = readerSelect('Passagens', [['1', '1 · 2×'], ['2', '2 · 4×']],
         String(repetitions), value => { repetitions = Number(value); updateUpscale(); });
     const color = el('input');
@@ -1459,7 +1495,8 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     colorLabel.append(color, document.createTextNode('Refinar cores'));
     const upscaleStatus = el('small', '', 'reader-upscale-status');
     upscaleStatus.setAttribute('role', 'status');
-    adjustments.append(el('strong', 'Zoom'), zoomButtons, model, concurrentTiles, passes, colorLabel, upscaleStatus);
+    adjustments.append(el('strong', 'Zoom'), zoomButtons, model, concurrentTiles,
+        concurrentPages, passes, colorLabel, upscaleStatus);
     layout.append(navigation, content, adjustments);
     view.append(layout);
     window.scrollTo(0, 0);
@@ -1473,8 +1510,21 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     const cache = new Map();
     let cacheBytes = 0;
     let generation = 0;
-    let activeJob;
+    let focusedFigure;
     let scheduled = false;
+    const pageQueue = createPageUpscaleQueue({
+        capacity: nativeScales[upscaleModel] ? pageConcurrency : 1,
+        next: active => {
+            if (upscaleModel === 'off') return null;
+            const variant = nativeScales[upscaleModel] ? upscaleModel :
+                [upscaleModel, repetitions, refineColor].join(':');
+            return upcoming.find(figure => figure.ready && !figure.loadFailed &&
+                !active.has(figure) && figure.displayed !== figure.original + ':' + variant &&
+                figure.failedGeneration !== generation);
+        },
+        run: processPageUpscale,
+        onFinish: () => trimCache()
+    });
 
     function setZoom(value) {
         const width = content.clientWidth;
@@ -1520,7 +1570,7 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
         window.removeEventListener('scroll', scheduleTracking);
         window.removeEventListener('resize', scheduleTracking);
         cancelAnimationFrame(trackingFrame);
-        activeJob?.abort();
+        pageQueue.close();
         for (const entry of cache.values()) releaseUpscaleCache(entry);
     };
     window.addEventListener('scroll', scheduleTracking, { passive: true });
@@ -1568,13 +1618,30 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
                 work.lastReadAt = work.updatedAt = Date.now();
             });
         }
-        upcoming = figures.slice(number, number + 4);
+        if (visible !== focusedFigure && upscaleModel !== 'off') {
+            upscaleStatus.textContent = visible.displayed ?
+                'Página ' + (number + 1) + ' · upscale pronto' :
+                (visible.ready ? 'Página ' + (number + 1) + ' · preparando upscale…' :
+                    'Página ' + (number + 1) + ' · carregando imagem…');
+        }
+        focusedFigure = visible;
+        upcoming = figures.slice(number, number + Math.max(4, pageConcurrency + 2));
         if (upscaleModel !== 'off') {
+            pageQueue.cancelWhere(figure => !upcoming.includes(figure));
+            const running = [...pageQueue.active].filter(([figure, job]) =>
+                !job.signal.aborted && upcoming.includes(figure));
             const variant = nativeScales[upscaleModel] ? upscaleModel :
                 [upscaleModel, repetitions, refineColor].join(':');
-            if (shouldPreemptUpscale(activeJob, visible, upcoming, variant, generation)) {
-                activeJob.abort();
-                upscaleStatus.textContent = 'Priorizando página ' + (number + 1) + '…';
+            const currentKey = visible.original + ':' + variant;
+            const needsPriority = visible.ready && !visible.loadFailed &&
+                visible.displayed !== currentKey && visible.failedGeneration !== generation &&
+                !running.some(([figure]) => figure === visible);
+            if (needsPriority && running.length >= pageQueue.limit) {
+                const victim = [...running].reverse().find(([figure]) => figure !== visible);
+                if (victim) {
+                    victim[1].abort();
+                    upscaleStatus.textContent = 'Priorizando página ' + (number + 1) + '…';
+                }
             }
             for (const figure of upcoming) figure.loadPage();
             scheduleUpscale();
@@ -1584,16 +1651,17 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     function updateControls() {
         const anime4k = upscaleModel !== 'off' && !nativeScales[upscaleModel];
         passes.hidden = colorLabel.hidden = !anime4k;
-        concurrentTiles.hidden = !nativeScales[upscaleModel];
+        concurrentTiles.hidden = concurrentPages.hidden = !nativeScales[upscaleModel];
     }
     function updateUpscale() {
         localStorage.setItem('manga-upscale-model', upscaleModel);
         localStorage.setItem('manga-upscale-repetitions', String(repetitions));
         localStorage.setItem('manga-upscale-color', refineColor ? 'yes' : 'no');
         updateControls();
-        if (nativeScales[upscaleModel]) void syncNativeConcurrency(desiredTiles).catch(() => {});
+        if (nativeScales[upscaleModel]) void syncNativeConcurrency().catch(() => {});
         generation++;
-        activeJob?.abort();
+        pageQueue.cancelWhere(() => true);
+        pageQueue.setLimit(nativeScales[upscaleModel] ? pageConcurrency : 1);
         upscaleStatus.textContent = '';
         if (upscaleModel === 'off') {
             for (const figure of figures) showOriginal(figure);
@@ -1608,11 +1676,11 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
         figure.image.hidden = !figure.ready;
     }
     function scheduleUpscale() {
-        if (scheduled || activeJob || page !== screen || upscaleModel === 'off') return;
+        if (scheduled || page !== screen || upscaleModel === 'off') return;
         scheduled = true;
         requestAnimationFrame(() => {
             scheduled = false;
-            processNext();
+            pageQueue.pump();
         });
     }
     function releaseUpscaleCache(entry) {
@@ -1623,6 +1691,7 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     function trimCache() {
         for (const [key, value] of cache) {
             if (cacheBytes <= 96 * 1024 * 1024 && cache.size <= 24) break;
+            if (pageQueue.active.has(value.figure)) continue;
             if (value.figure.displayed === key) {
                 if (near.has(value.figure) || upcoming.includes(value.figure)) continue;
                 showOriginal(value.figure);
@@ -1632,28 +1701,20 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
             releaseUpscaleCache(value);
         }
     }
-    async function processNext() {
-        if (page !== screen || activeJob || upscaleModel === 'off') return;
+    async function processPageUpscale(figure, job) {
         const modelName = upscaleModel;
         const scale = nativeScales[modelName];
         const variant = scale ? modelName : [modelName, repetitions, refineColor].join(':');
-        const keyFor = figure => figure.original + ':' + variant;
-        const figure = upcoming.find(figure => !figure.loadFailed &&
-            figure.displayed !== keyFor(figure) && figure.failedGeneration !== generation);
-        if (!figure?.ready) return;
-        const key = keyFor(figure);
+        const key = figure.original + ':' + variant;
         const current = generation;
-        const job = new AbortController();
-        job.figure = figure;
-        activeJob = job;
         const stillNeeded = () => page === screen && generation === current && !job.signal.aborted;
         try {
             let output = cache.get(key);
             if (output) cache.delete(key);
             else {
-                upscaleStatus.textContent = 'Processando página ' + (figure.pageNumber + 1) + ' · ' + models[modelName] + '…';
+                if (figure === focusedFigure) upscaleStatus.textContent = 'Processando página ' + (figure.pageNumber + 1) + ' · ' + models[modelName] + '…';
                 const progress = (done, total) => {
-                    if (stillNeeded()) upscaleStatus.textContent = 'Upscale da página ' +
+                    if (stillNeeded() && figure === focusedFigure) upscaleStatus.textContent = 'Upscale da página ' +
                         (figure.pageNumber + 1) + ' · bloco ' + done + '/' + total;
                 };
                 if (scale) await nativeSync;
@@ -1707,16 +1768,15 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
             figure.enhancedImage = enhanced;
             figure.displayed = key;
             figure.prepend(enhanced);
-            upscaleStatus.textContent = 'Página ' + (figure.pageNumber + 1) + ' · ' + output.text;
+            if (figure === focusedFigure) upscaleStatus.textContent = 'Página ' + (figure.pageNumber + 1) + ' · ' + output.text;
         } catch (error) {
             if (stillNeeded()) {
                 figure.failedGeneration = current;
-                upscaleStatus.textContent = error.message;
+                if (figure === focusedFigure) upscaleStatus.textContent = error.message;
             }
         } finally {
             trimCache();
-            activeJob = undefined;
-            scheduleUpscale();
+            // The page queue removes the completed job and fills the next free slot.
         }
     }
 
