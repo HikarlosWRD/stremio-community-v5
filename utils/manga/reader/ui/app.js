@@ -1462,9 +1462,17 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
     const content = el('div', '', 'reader-content');
     const status = el('p', 'Carregando páginas…', 'muted');
     const pages = el('div', '', 'pages');
+    const failedPages = new Set();
+    const sourceError = el('aside', '', 'reader-source-error');
+    sourceError.hidden = true;
+    const sourceErrorText = el('p', 'A fonte não conseguiu carregar as imagens deste capítulo.');
+    sourceError.append(el('strong', 'Problema com as imagens da fonte'), sourceErrorText,
+        button('Tentar recarregar capítulo', () =>
+            reader(item, entries, index, returnToList, resumePage)),
+        button('Buscar em outra fonte', () => searchView({ query: item.title }), 'primary'));
     const heading = el('div', '', 'reader-heading');
     heading.append(el('h1', chapter.name), el('p', item.title + ' · ' + sourceLabel(item.source), 'muted'), status);
-    content.append(heading, pages);
+    content.append(heading, sourceError, pages);
     const adjustments = el('aside', '', 'reader-rail');
     adjustments.setAttribute('aria-label', 'Zoom e upscale');
     const smaller = button('−', () => setZoom(zoom - 25));
@@ -1882,6 +1890,8 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
                 image.src = url;
             };
             image.onload = () => {
+                failedPages.delete(figure);
+                if (failedPages.size === 0) sourceError.hidden = true;
                 image.hidden = false;
                 figure.ready = true;
                 figure.classList.remove('pending-page');
@@ -1896,6 +1906,17 @@ async function reader(item, entries, index, returnToList, resumePage = 0) {
                 scheduleTracking();
             };
             image.onerror = () => {
+                failedPages.add(figure);
+                if (page === screen && failedPages.size >= Math.min(2, urls.length)) {
+                    if (sourceError.hidden) {
+                        sourceError.hidden = false;
+                        const id = url.split('/').pop();
+                        void api('imageFailure', { id }).then(result => {
+                            if (page === screen && result.error)
+                                sourceErrorText.textContent = result.error;
+                        }).catch(() => {});
+                    }
+                }
                 figure.ready = false;
                 figure.loadFailed = true;
                 figure.classList.remove('pending-page');

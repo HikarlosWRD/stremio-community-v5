@@ -318,6 +318,10 @@ main:has(.reader) { max-width: none; }
     .reader-field { font-size: .8rem; }
 }
 .page { position: relative; margin: 0; min-height: 70px; }
+.reader-source-error { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 15px; margin-bottom: 12px; border: 1px solid #784a4a; border-radius: 12px; background: #271b1be8; }
+.reader-source-error[hidden] { display: none; }
+.reader-source-error strong, .reader-source-error p { flex-basis: 100%; margin: 0; }
+.reader-source-error p { color: #e0cccc; font-size: .9rem; }
 .page img { display: block; max-width: 100%; width: 100%; height: auto; }
 .enhanced-tiles { width: 100%; }
 .enhanced-tile-row { display: flex; width: 100%; align-items: stretch; }

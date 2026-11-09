@@ -10,6 +10,7 @@ const { setMaxListeners } = require('node:events');
 const { normalize, rankResults, searchableSources } = require('./search-rules');
 const coverageRules = import('./coverage.mjs');
 const { restore, configureNativeConcurrency } = require('./native-upscale');
+const { detectImageType, imageHttpError } = require('./image-format');
 const coverageCache = new Map();
 const trendingCache = new Map();
 
@@ -76,6 +77,8 @@ const diagnostics = path.join(dataDir, 'reader.log');
 const java = path.join(__dirname, 'runtime', 'bin', 'java.exe');
 const children = new Set();
 const images = new Map();
+const imageFailures = new Map();
+const refreshedMihonChapters = new Map();
 const imageTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
 if (fs.existsSync(diagnostics) && fs.statSync(diagnostics).size > 1024 * 1024)
     fs.renameSync(diagnostics, diagnostics + '.old');
@@ -203,9 +206,9 @@ function saveSources(enabled, kotatsuSources) {
     selected = [...enabled];
     installedKotatsu = [...kotatsuSources];
 }
-function media(engine, value, op = 'image') {
+function media(engine, value, op = 'image', chapterId, pageIndex) {
     const id = randomUUID();
-    images.set(id, { engine, value, op });
+    images.set(id, { engine, value, op, chapterId, pageIndex });
     if (images.size > 5000) images.delete(images.keys().next().value);
     return 'image/' + id;
 }
@@ -451,14 +454,59 @@ async function command(body) {
         }
         case 'chapters': return chapterRows(body.engine, body.id);
         case 'work': return workDetails(body.engine, body.id, String(body.title ?? '').slice(0, 500));
-        case 'pages': return (await chapterImages(body.engine, body.id)).map(p => media(body.engine, p));
+        case 'pages': return (await chapterImages(body.engine, body.id))
+            .map((p, i) => media(body.engine, p, 'image', body.id, i));
         case 'coverage': return coverage(body.engine, body.id);
+        case 'imageFailure': return { error: imageFailures.get(String(body.id)) || null };
         case 'trending': return trendingManga(body.page);
         case 'nativeConcurrency': return configureNativeConcurrency(body.parallel);
         case 'randomTrending': return randomTrendingManga(body.previousId);
         default: throw new Error('Operação inválida.');
     }
 }
+const chapterImageRefreshes = new Map();
+function refreshMihonPages(chapterId) {
+    const key = String(chapterId);
+    const cached = chapterImageRefreshes.get(key);
+    if (cached && cached.expires > Date.now()) return cached.promise;
+    const promise = chapterImages('mihon', key);
+    chapterImageRefreshes.set(key, { promise, expires: Date.now() + 8000 });
+    promise.catch(() => {
+        if (chapterImageRefreshes.get(key)?.promise === promise)
+            chapterImageRefreshes.delete(key);
+    });
+    return promise;
+}
+
+async function fetchMihonImage(connection, value, signal) {
+    const uri = new URL(value, connection.origin);
+    if (uri.origin !== connection.origin || !uri.pathname.startsWith('/api/'))
+        throw new Error('Rota de imagem inválida.');
+    const response = await fetch(uri, {
+        headers: { authorization: connection.auth }, redirect: 'error',
+        signal: signal ?? AbortSignal.timeout(23000)
+    });
+    if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        throw imageHttpError(response.status);
+    }
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > 16 * 1024 * 1024) throw new Error('Imagem excede 16 MiB.');
+        chunks.push(chunk);
+    }
+    const bytes = Buffer.concat(chunks, size);
+    const type = detectImageType(bytes);
+    if (!type) {
+        const reported = response.headers.get('content-type')?.split(';')[0] || 'desconhecido';
+        throw new Error('A fonte retornou conteúdo inválido em vez de imagem (' +
+            reported.slice(0, 60) + ').');
+    }
+    return { type, bytes };
+}
+
 async function readImage(entry, signal) {
     if (!entry) throw new Error('Imagem expirou.');
     if (entry.engine === 'kotatsu') {
@@ -467,20 +515,21 @@ async function readImage(entry, signal) {
         return { type, bytes: Buffer.from(bytes, 'base64') };
     }
     const connection = await mihonStartup;
-    const uri = new URL(entry.value, connection.origin);
-    if (uri.origin !== connection.origin || !uri.pathname.startsWith('/api/')) throw new Error('Rota de imagem inválida.');
-    const r = await fetch(uri, { headers: { authorization: connection.auth }, redirect: 'error',
-        signal: signal ?? AbortSignal.timeout(23000) });
-    const type = r.headers.get('content-type')?.split(';')[0];
-    if (!r.ok || !imageTypes.has(type)) throw new Error('Imagem indisponível.');
-    const chunks = [];
-    let size = 0;
-    for await (const chunk of r.body) {
-        size += chunk.length;
-        if (size > 16 * 1024 * 1024) throw new Error('Imagem excede 16 MiB.');
-        chunks.push(chunk);
+    try {
+        return await fetchMihonImage(connection, entry.value, signal);
+    } catch (error) {
+        // Links created by Mihon can expire. Refresh the chapter once for all
+        // simultaneous failures, rather than sending one refresh per image.
+        if (entry.chapterId == null || !Number.isInteger(entry.pageIndex) ||
+            signal?.aborted) throw error;
+        let refreshed;
+        try { refreshed = await refreshMihonPages(entry.chapterId); }
+        catch { throw error; }
+        const url = refreshed?.[entry.pageIndex];
+        if (!url || url === entry.value) throw error;
+        entry.value = url;
+        return fetchMihonImage(connection, url, signal);
     }
-    return { type, bytes: Buffer.concat(chunks, size) };
 }
 
 const sourceMutations = new Set(['enable', 'installKotatsu', 'install', 'uninstallSources']);
@@ -557,8 +606,17 @@ http.createServer(async (req, res) => {
             const bytes = await restore(req, route.slice('restore/'.length), client.signal);
             if (!client.signal.aborted) res.writeHead(200, { 'Content-Type': 'image/png' }).end(bytes);
         } else if (req.method === 'GET' && route.startsWith('image/')) {
-            const { type, bytes } = await readImage(images.get(route.slice(6)));
-            res.writeHead(200, { 'Content-Type': type }).end(bytes);
+            const key = route.slice(6);
+            try {
+                const { type, bytes } = await readImage(images.get(key));
+                imageFailures.delete(key);
+                res.writeHead(200, { 'Content-Type': type }).end(bytes);
+            } catch (error) {
+                imageFailures.set(key, String(error.message).slice(0, 250));
+                if (imageFailures.size > 5000)
+                    imageFailures.delete(imageFailures.keys().next().value);
+                throw error;
+            }
         } else if (req.method === 'GET' && route.startsWith('cover?')) {
             const params = new URLSearchParams(route.slice(6));
             const id = params.get('id');
